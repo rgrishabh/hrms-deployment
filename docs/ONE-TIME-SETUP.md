@@ -70,7 +70,7 @@ It creates or updates the following.
 | env `dev` | `DEV_EC2_SSH_KEY`, `DEV_ENV_FILE` | secrets |
 | env `prod-<slug>` | required reviewer = you; `AWS_DEPLOY_ROLE_ARN` | protection + var |
 | env `infra-<slug>` | required reviewer = you (Terraform apply) | protection |
-| rulesets | `main`/`develop`: PR required, checks `ci / Lint, test, build`, `ci / Image build + Trivy`, `ci / gitleaks`, linear history, no force-push. Deployment `main`: `lint`, `secrets`; bypass: admins + the bot | rulesets |
+| rulesets | `main`/`develop`: PR required, checks `ci / Lint, test, build`, `ci / Image build + Trivy`, `ci / gitleaks`, linear history, no force-push. Deployment `main`: `lint`, `secrets`; bypass: admins (so the bot needs `DEPLOY_REPO_TOKEN` or the App) | rulesets |
 
 Optional: `NOTIFY_WEBHOOK_URL` (Slack/Teams), `GHCR_PULL_USER`/`GHCR_PULL_TOKEN`, `RELEASE_PLEASE_TOKEN` (app repos),
 and the SSM vars (`DEV_DEPLOY_METHOD=ssm`, `DEV_AWS_ROLE_ARN`, `DEV_INSTANCE_ID`, `DEV_ARTIFACT_BUCKET`).

@@ -58,8 +58,10 @@ for r in hrms-backend hrms-frontend hrms-deployment; do
   api -X PUT "repos/$OWNER/$r/private-vulnerability-reporting" >/dev/null 2>&1 || true
 done
 # The app repos call reusable workflows in hrms-deployment (private): allow repos of the same owner.
-api -X PUT "repos/$OWNER/hrms-deployment/actions/permissions/access" -f access_level=user >/dev/null \
-  || warn "could not allow other repos to use hrms-deployment workflows (Settings → Actions → General → Access)"
+if [ "$(gh repo view "$OWNER/hrms-deployment" --json visibility -q .visibility)" != PUBLIC ]; then
+  api -X PUT "repos/$OWNER/hrms-deployment/actions/permissions/access" -f access_level=user >/dev/null \
+    || warn "could not allow other repos to use hrms-deployment workflows (Settings → Actions → General → Access)"
+fi
 gh label create release --repo "$OWNER/hrms-deployment" --color 0E8A16 --description "Production release PR" >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------ dispatch credentials (app repos)
@@ -140,8 +142,10 @@ ruleset() {  # repo, name, branch, checks-json, bypass-json
   fi
   id=$(api "repos/$OWNER/$repo/rulesets" --jq ".[] | select(.name == \"$name\") | .id" 2>/dev/null || true)
   if [ -n "$id" ]; then api -X PUT "repos/$OWNER/$repo/rulesets/$id" --input - <<<"$body" >/dev/null 2>&1 || warn "$repo: could not update ruleset $name"
-  else api -X POST "repos/$OWNER/$repo/rulesets" --input - <<<"$body" >/dev/null 2>&1 \
-    || warn "$repo: rulesets on private repos need GitHub Pro/Team (or make the repo public); '$name' not applied"; fi
+  else
+    local err
+    err=$(api -X POST "repos/$OWNER/$repo/rulesets" --input - <<<"$body" 2>&1 >/dev/null) || warn "$repo: ruleset '$name' not applied: ${err:0:200}"
+  fi
 }
 ADMIN='[{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]'
 APP_CHECKS='["ci / Lint, test, build", "ci / Image build + Trivy", "ci / gitleaks"]'
@@ -149,8 +153,9 @@ for r in "${APP_REPOS[@]}"; do
   ruleset "$r" "protect-main" main "$APP_CHECKS" "$ADMIN"
   ruleset "$r" "protect-develop" develop "$APP_CHECKS" "$ADMIN"
 done
-# hrms-deployment main: bots commit versions.env directly (dev) — allow the GitHub App, or GitHub Actions (GITHUB_TOKEN).
-BOT_BYPASS='[{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}, {"actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always"}]'
+# hrms-deployment main: bots commit versions.env directly (dev deploys, prod reverts). Personal repos cannot let the
+# GitHub Actions integration bypass rulesets, so the bot must use DEPLOY_REPO_TOKEN (an admin's PAT) or the GitHub App.
+BOT_BYPASS=$ADMIN
 if [ -n "${DEPLOY_APP_ID:-}" ]; then BOT_BYPASS=$(jq -c --argjson id "$DEPLOY_APP_ID" '. + [{actor_id: $id, actor_type: "Integration", bypass_mode: "always"}]' <<<"$BOT_BYPASS"); fi
 ruleset hrms-deployment "protect-main" main '["lint", "secrets"]' "$BOT_BYPASS"
 
