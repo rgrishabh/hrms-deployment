@@ -47,7 +47,9 @@ for r in hrms-backend hrms-frontend hrms-deployment; do
       git -C "$REPOS_DIR/$r" push -u origin develop
     fi
   fi
-  api -X PATCH "repos/$OWNER/$r" -F delete_branch_on_merge=true -F allow_merge_commit=false -F allow_squash_merge=true \
+  # App repos keep long-lived develop: auto-delete would remove it when develop -> main is merged.
+  autodelete=true; [ "$r" = hrms-deployment ] || autodelete=false
+  api -X PATCH "repos/$OWNER/$r" -F delete_branch_on_merge=$autodelete -F allow_merge_commit=false -F allow_squash_merge=true \
     -F allow_rebase_merge=true -F allow_auto_merge=true >/dev/null
   # Workflows get a read-only GITHUB_TOKEN by default; release-please/create-pull-request may open PRs.
   api -X PUT "repos/$OWNER/$r/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true >/dev/null
