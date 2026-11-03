@@ -40,7 +40,7 @@ x-branding: &branding
 
 services:
   db:
-    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
     restart: unless-stopped
     <<: *logging
     environment:
@@ -188,7 +188,7 @@ services:
 
   # Nightly database + documents backup into the backups volume (kept BACKUP_KEEP_DAYS days).
   backup:
-    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
     <<: *logging
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
