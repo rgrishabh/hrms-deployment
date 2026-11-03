@@ -63,7 +63,7 @@ It creates or updates the following.
 
 | Where | Name | Kind |
 |---|---|---|
-| all three repos | private repo, `main` (+ `develop` for apps), squash/rebase only, auto-delete branches | settings |
+| all three repos | repo, `main` (+ `develop` for apps), squash/rebase only; auto-delete merged branches only in hrms-deployment (it would delete `develop`) | settings |
 | app repos | `DEPLOY_APP_ID` + `DEPLOY_APP_PRIVATE_KEY`, or `DEPLOY_REPO_TOKEN` | var + secret / secret |
 | hrms-deployment | Actions access "repos of the same owner" (reusable workflows), label `release` | settings |
 | env `dev` | `DEV_EC2_HOST`, `DEV_EC2_USER`, `DEV_SITE`, `DEV_EC2_HOST_KEY` (ssh-keyscan; **check the fingerprint**) | vars |
