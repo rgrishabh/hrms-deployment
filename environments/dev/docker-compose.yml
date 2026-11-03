@@ -212,7 +212,7 @@ services:
   # Uses the EC2 instance role (IMDSv2 hop limit 2); no AWS keys on disk.
   backup-s3:
     profiles: ["s3backup"]
-    image: ${AWS_CLI_IMAGE:-amazon/aws-cli:2.27.50}
+    image: ${AWS_CLI_IMAGE:-amazon/aws-cli:2.39.3}
     <<: *logging
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
