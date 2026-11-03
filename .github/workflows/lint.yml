@@ -1,0 +1,55 @@
+name: Lint
+# Static checks for this repo: actionlint (+shellcheck inside workflows), shellcheck, Compose config,
+# gitleaks. Terraform checks live in terraform.yml.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: actionlint (pinned release, checksum verified)
+        run: |
+          v=1.7.12; sum=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl -fsSL -o /tmp/al.tgz "https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_amd64.tar.gz"
+          echo "$sum  /tmp/al.tgz" | sha256sum -c -
+          tar -xzf /tmp/al.tgz -C /tmp actionlint
+          /tmp/actionlint -color
+      - name: shellcheck
+        run: |
+          shellcheck scripts/*.sh scripts/lib/*.sh environments/dev/bin/dc environments/dev/bin/backup environments/dev/bin/restore environments/dev/bin/init-env
+          shellcheck -s sh environments/dev/bin/backup-loop.sh
+      - name: Compose config (sample values)
+        working-directory: environments/dev
+        run: |
+          sed -e 's#<[^>]*>#placeholder@example.com#g' .env.example > "$RUNNER_TEMP/dev.env"
+          for k in POSTGRES_SUPERUSER_PASSWORD DB_OWNER_PASSWORD DB_APP_PASSWORD; do sed -i "s#^$k=.*#$k=ci-secret#" "$RUNNER_TEMP/dev.env"; done
+          sed -i 's#^DATA_ENCRYPTION_KEY=.*#DATA_ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=#' "$RUNNER_TEMP/dev.env"
+          printf 'BACKEND_TAG=sha-0000000\nFRONTEND_TAG=sha-0000000\n' > "$RUNNER_TEMP/versions.env"
+          docker compose --env-file "$RUNNER_TEMP/dev.env" --env-file "$RUNNER_TEMP/versions.env" --profile tools --profile s3backup config --quiet
+          echo "compose config ok" >> "$GITHUB_STEP_SUMMARY"
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

@@ -49,6 +49,12 @@ if command -v ufw >/dev/null; then
   if ! ufw status | grep -q 'Status: active'; then log "enabling ufw (22, 80, 443)"; ufw --force enable >/dev/null; fi
 fi
 
+# AWS CLI: only needed for the SSM deploy path and S3 backups from the host.
+if [ "${INSTALL_AWSCLI:-auto}" != "no" ] && ! command -v aws >/dev/null && command -v snap >/dev/null \
+   && [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' http://169.254.169.254/latest/meta-data/ 2>/dev/null)" != "000" ]; then  # any answer (incl. 401 with IMDSv2) = EC2
+  log "installing AWS CLI (EC2 detected)"; snap install aws-cli --classic >/dev/null
+fi
+
 if ! dpkg -s unattended-upgrades >/dev/null 2>&1; then apt-get install -y -qq unattended-upgrades; fi
 systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 

@@ -1,0 +1,104 @@
+name: Release to prod (open PR)
+# An app release (vX.Y.Z, signed) dispatches "release-prod". This opens or updates ONE pull request
+# per app ("release/prod-<app>") that bumps <APP>_TAG in environments/prod/<slug>/versions.env for every
+# enabled customer, with the release notes and a link to the dev deployment of the same commit.
+# Merging the PR starts deploy-prod, which waits for the prod-<slug> approval: the only human step.
+on:
+  repository_dispatch:
+    types: [release-prod]
+  workflow_dispatch:
+    inputs:
+      app:
+        description: backend | frontend
+        required: true
+        type: choice
+        options: [backend, frontend]
+      version:
+        description: vX.Y.Z (must already be published and signed)
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-prod-${{ github.event.client_payload.app || inputs.app }}
+  cancel-in-progress: false
+
+jobs:
+  pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: bot
+        uses: ./.github/actions/bot-token
+        with:
+          app-id: ${{ vars.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          fallback: ${{ github.token }}
+      - name: Bump versions for enabled customers
+        id: bump
+        env:
+          APP: ${{ github.event.client_payload.app || inputs.app }}
+          VERSION: ${{ github.event.client_payload.tag || inputs.version }}
+          SHA: ${{ github.event.client_payload.sha }}
+          SRC_REPO: ${{ github.event.client_payload.repo }}
+          RUN_URL: ${{ github.event.client_payload.run_url }}
+          NOTES: ${{ github.event.client_payload.notes }}
+        run: |
+          [[ "$APP" =~ ^(backend|frontend)$ ]] || { echo "::error::unknown app '$APP'"; exit 1; }
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not vX.Y.Z"; exit 1; }
+          KEY=$(echo "$APP" | tr '[:lower:]' '[:upper:]')_TAG
+          mapfile -t slugs < <(jq -r '.customers[] | select(.enabled == true) | .slug' environments/prod/customers.json)
+          changed=()
+          for s in "${slugs[@]}"; do
+            f="environments/prod/$s/versions.env"
+            [ -f "$f" ] || { echo "::warning::$s is enabled but $f is missing; skipped"; continue; }
+            old=$(grep -E "^$KEY=" "$f" | cut -d= -f2)
+            [ "$old" = "$VERSION" ] && continue
+            sed -i -E "s#^$KEY=.*#$KEY=$VERSION#" "$f"; changed+=("$s ($old → $VERSION)")
+          done
+          # Best-effort link to the dev deployment that ran this commit's image.
+          short="sha-${SHA::7}"; dev=""
+          if [ -n "$SHA" ]; then
+            c=$(git log --format=%H -S "$short" -- environments/dev/versions.env | tail -1)
+            [ -n "$c" ] && dev=$(git log -1 --format=%B "$c" | sed -n 's/^Run: //p')
+          fi
+          {
+            echo "body<<HRMS_EOF"
+            echo "Release **hrms-$APP $VERSION** to production."
+            echo
+            echo "| | |"; echo "|---|---|"
+            echo "| Source | ${SRC_REPO:+https://github.com/$SRC_REPO/releases/tag/$VERSION} |"
+            echo "| Build | ${RUN_URL:-manual} |"
+            echo "| Same commit on dev (\`$short\`) | ${dev:-not found — check that this commit was deployed to dev} |"
+            echo
+            echo "**Customers:**"; for c in "${changed[@]}"; do echo "- $c"; done
+            echo
+            echo "Merging starts \`deploy-prod\`; each customer waits for approval in GitHub Environment \`prod-<slug>\`."
+            echo "Signatures are verified before anything is deployed."
+            echo; echo "<details><summary>Release notes</summary>"; echo; echo "${NOTES:-No release notes.}"; echo; echo "</details>"
+            echo "HRMS_EOF"
+          } >> "$GITHUB_OUTPUT"
+          { echo "app=$APP"; echo "version=$VERSION"; echo "count=${#changed[@]}"; } >> "$GITHUB_OUTPUT"
+          echo "### release-prod: hrms-$APP $VERSION → ${#changed[@]} customer(s)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Open or update the release PR
+        if: steps.bump.outputs.count != '0'
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
+        with:
+          token: ${{ steps.bot.outputs.token }}
+          branch: release/prod-${{ steps.bump.outputs.app }}
+          base: main
+          title: "chore(prod): release hrms-${{ steps.bump.outputs.app }} ${{ steps.bump.outputs.version }}"
+          commit-message: "chore(prod): release hrms-${{ steps.bump.outputs.app }} ${{ steps.bump.outputs.version }}"
+          body: ${{ steps.bump.outputs.body }}
+          labels: release
+          delete-branch: true
+          add-paths: environments/prod/*/versions.env
+      - if: steps.bump.outputs.count == '0'
+        run: echo "::notice::No enabled customer needs ${{ steps.bump.outputs.version }} (none configured, or already on it)."

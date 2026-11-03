@@ -1,0 +1,33 @@
+name: Bot token
+description: >-
+  Token for bot commits and pull requests in this repo. A GitHub App token (preferred) or a PAT makes
+  bot PRs run required checks; GITHUB_TOKEN is the fallback (its PRs/pushes trigger no workflows).
+inputs:
+  app-id:
+    description: vars.DEPLOY_APP_ID
+    default: ""
+  private-key:
+    description: secrets.DEPLOY_APP_PRIVATE_KEY
+    default: ""
+  pat:
+    description: secrets.DEPLOY_REPO_TOKEN
+    default: ""
+  fallback:
+    description: github.token
+    required: true
+outputs:
+  token:
+    description: The token to use
+    value: ${{ steps.app.outputs.token || inputs.pat || inputs.fallback }}
+  kind:
+    description: app | pat | github_token
+    value: ${{ steps.app.outputs.token && 'app' || (inputs.pat && 'pat' || 'github_token') }}
+runs:
+  using: composite
+  steps:
+    - id: app
+      if: inputs.app-id != '' && inputs.private-key != ''
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}

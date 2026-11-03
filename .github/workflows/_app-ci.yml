@@ -1,0 +1,173 @@
+name: App CI (reusable)
+# Called by hrms-backend and hrms-frontend on pull requests (and before publishing from develop):
+# lint, unit tests, production build, dependency audit, image build without push, hadolint,
+# Trivy (fails on CRITICAL), gitleaks, and one sticky PR comment with the results.
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: backend | frontend
+        type: string
+        required: true
+      postgres:
+        description: Start PostgreSQL 17 and create the test databases
+        type: boolean
+        default: false
+      node-version:
+        type: string
+        default: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: ${{ inputs.postgres && 'postgres:17-alpine' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: postgres
+      TEST_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test
+      TEST_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test
+      TEST_SINGLE_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test_single
+      TEST_SINGLE_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test_single
+      TEST_SINGLE_B_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test_single_b
+      TEST_SINGLE_B_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test_single_b
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Create database roles (runtime role without BYPASSRLS)
+        if: inputs.postgres
+        run: |
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE hrms_owner LOGIN PASSWORD 'ci_owner' NOSUPERUSER NOBYPASSRLS" \
+            -c "CREATE ROLE hrms_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS" \
+            -c "CREATE DATABASE hrms_test OWNER hrms_owner" \
+            -c "CREATE DATABASE hrms_test_single OWNER hrms_owner" \
+            -c "CREATE DATABASE hrms_test_single_b OWNER hrms_owner"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Dependency audit (production dependencies, high and above)
+        run: npm audit --omit=dev --audit-level=high
+
+  image:
+    name: Image build + Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build (no push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          push: false
+          load: true
+          tags: hrms-${{ inputs.app }}:ci
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number || 'local' }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=hrms-${{ inputs.app }}
+          cache-to: type=gha,mode=max,scope=hrms-${{ inputs.app }}
+      - name: Trivy (fail on CRITICAL)
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: hrms-${{ inputs.app }}:ci
+          format: json
+          output: trivy.json
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+      - name: Gate on CRITICAL findings
+        id: gate
+        env:
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
+          APP: ${{ inputs.app }}
+        run: |
+          if [ "$TRIVY_OUTCOME" != "success" ] || [ ! -s trivy.json ]; then echo "::error::Trivy did not run"; exit 1; fi
+          count() { jq --arg s "$1" '[.Results[]?.Vulnerabilities[]? | select(.Severity == $s)] | length' trivy.json; }
+          crit=$(count CRITICAL); high=$(count HIGH)
+          {
+            echo "### Trivy: hrms-$APP (fixable only)"; echo; echo "CRITICAL: **$crit** · HIGH: **$high**"; echo
+            if [ "$((crit + high))" -gt 0 ]; then
+              echo "| Severity | Package | Installed | Fixed | ID |"; echo "|---|---|---|---|---|"
+              jq -r '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH")] | sort_by(.Severity) | .[:50][]
+                | "| \(.Severity) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "") | \(.VulnerabilityID) |"' trivy.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$crit" -gt 0 ]; then echo "::error::$crit fixable CRITICAL vulnerabilities"; exit 1; fi
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-${{ inputs.app }}
+          path: trivy.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  report:
+    name: PR comment
+    needs: [test, image, secrets]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          APP: ${{ inputs.app }}
+          TEST: ${{ needs.test.result }}
+          IMAGE: ${{ needs.image.result }}
+          SECRETS: ${{ needs.secrets.result }}
+        with:
+          script: |
+            const icon = (r) => ({ success: '✅', failure: '❌', cancelled: '⏹️', skipped: '⏭️' }[r] ?? '❔');
+            const { APP, TEST, IMAGE, SECRETS } = process.env;
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const marker = `<!-- hrms-ci:${APP} -->`;
+            const body = [marker, `### CI: hrms-${APP}`, '',
+              '| Check | Result |', '|---|---|',
+              `| Lint, tests, build, audit | ${icon(TEST)} ${TEST} |`,
+              `| Image build, hadolint, Trivy (CRITICAL gate) | ${icon(IMAGE)} ${IMAGE} |`,
+              `| gitleaks | ${icon(SECRETS)} ${SECRETS} |`, '',
+              `Commit \`${context.payload.pull_request.head.sha.slice(0, 7)}\` · [run details and Trivy report](${run})`].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number, per_page: 100 });
+            const mine = comments.find((c) => c.body?.includes(marker));
+            if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });

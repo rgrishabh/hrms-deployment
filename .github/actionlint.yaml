@@ -1,0 +1,6 @@
+# actionlint configuration (also used by the lint workflow).
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # ssh "…$VAR…": local expansion is intended (values are the runner's, never the host's).
+      - 'SC2029'

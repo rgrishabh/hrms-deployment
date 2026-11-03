@@ -1,0 +1,214 @@
+name: Deploy dev
+# Fully automatic: an app push to develop dispatches "deploy-dev" with {app, tag}; a change under
+# environments/dev/ (or the dev scripts) on main redeploys; or run manually.
+# 1. the bot commits the tag into environments/dev/versions.env (git is the source of truth)
+# 2. SSH (pinned host key) or AWS SSM to the dev host: bootstrap-ec2.sh, sync files, write .env (600),
+#    GHCR login, deploy-dev.sh (pull -> provision -> migrate -> up -> /ready), GHCR logout
+# 3. public smoke test; on any failure: redeploy the previous versions.env, revert the commit, fail
+on:
+  repository_dispatch:
+    types: [deploy-dev]
+  push:
+    branches: [main]
+    paths:
+      - environments/dev/**
+      - scripts/deploy-dev.sh
+      - scripts/bootstrap-ec2.sh
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: "Backend tag (sha-<short> or vX.Y.Z); empty = keep"
+        required: false
+      frontend_tag:
+        description: "Frontend tag; empty = keep"
+        required: false
+
+permissions:
+  contents: write   # bot commit of versions.env
+  packages: read    # GHCR pull on the host with this run's token (if packages grant access to this repo)
+  id-token: write   # optional SSM path via AWS OIDC
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  DEPLOY_DIR: /opt/hrms/dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: dev
+      url: https://${{ vars.DEV_SITE }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+      - id: bot
+        uses: ./.github/actions/bot-token
+        with:
+          app-id: ${{ vars.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          fallback: ${{ github.token }}
+
+      - name: Resolve tags
+        id: tags
+        env:
+          EVENT: ${{ github.event_name }}
+          P_APP: ${{ github.event.client_payload.app }}
+          P_TAG: ${{ github.event.client_payload.tag }}
+          P_RUN: ${{ github.event.client_payload.run_url }}
+          IN_BACKEND: ${{ inputs.backend_tag }}
+          IN_FRONTEND: ${{ inputs.frontend_tag }}
+        run: |
+          f=environments/dev/versions.env
+          cp "$f" "$RUNNER_TEMP/versions.prev.env"
+          valid() { [[ "$1" =~ ^(sha-[0-9a-f]{7,40}|v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; }
+          set_tag() { valid "$2" || { echo "::error::invalid tag '$2' for $1"; exit 1; }; sed -i -E "s#^$1=.*#$1=$2#" "$f"; }
+          case "$EVENT" in
+            repository_dispatch)
+              case "$P_APP" in backend) set_tag BACKEND_TAG "$P_TAG" ;; frontend) set_tag FRONTEND_TAG "$P_TAG" ;; *) echo "::error::unknown app '$P_APP'"; exit 1 ;; esac
+              echo "reason=$P_APP $P_TAG ($P_RUN)" >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch)
+              [ -z "$IN_BACKEND" ] || set_tag BACKEND_TAG "$IN_BACKEND"
+              [ -z "$IN_FRONTEND" ] || set_tag FRONTEND_TAG "$IN_FRONTEND"
+              echo "reason=manual by $GITHUB_ACTOR" >> "$GITHUB_OUTPUT" ;;
+            *) echo "reason=config change $GITHUB_SHA" >> "$GITHUB_OUTPUT" ;;
+          esac
+          # shellcheck disable=SC1090
+          . "$f"
+          { echo "backend=$BACKEND_TAG"; echo "frontend=$FRONTEND_TAG"; } >> "$GITHUB_OUTPUT"
+          if [ "$BACKEND_TAG" = unset ] || [ "$FRONTEND_TAG" = unset ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Waiting for the first image of both apps (backend=$BACKEND_TAG frontend=$FRONTEND_TAG); tag recorded, nothing deployed."
+          else echo "ready=true" >> "$GITHUB_OUTPUT"; fi
+          git diff --quiet -- "$f" && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit versions.env (bot)
+        if: steps.tags.outputs.changed == 'true'
+        env:
+          REASON: ${{ steps.tags.outputs.reason }}
+        run: |
+          git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
+          git config user.name "hrms-deploy-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qm "chore(dev): deploy backend=${{ steps.tags.outputs.backend }} frontend=${{ steps.tags.outputs.frontend }} [skip ci]" \
+                     -m "Reason: $REASON" -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" environments/dev/versions.env
+          for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase origin main; sleep $((i * 3)); done
+          echo "BUMP_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------- SSH path (default)
+      - name: SSH setup (pinned host key)
+        if: steps.tags.outputs.ready == 'true' && vars.DEV_DEPLOY_METHOD != 'ssm'
+        env:
+          KEY: ${{ secrets.DEV_EC2_SSH_KEY }}
+          HOST_KEY: ${{ vars.DEV_EC2_HOST_KEY }}
+          HOST: ${{ vars.DEV_EC2_HOST }}
+          USER_: ${{ vars.DEV_EC2_USER }}
+        run: |
+          [ -n "$KEY" ] && [ -n "$HOST_KEY" ] && [ -n "$HOST" ] || { echo "::error::DEV_EC2_SSH_KEY (secret), DEV_EC2_HOST_KEY and DEV_EC2_HOST (vars) are required"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+          printf 'Host dev\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/id_deploy\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n' "$HOST" "${USER_:-ubuntu}" > ~/.ssh/config
+          ssh dev true
+
+      - name: Sync, bootstrap host, write .env, GHCR login
+        if: steps.tags.outputs.ready == 'true' && vars.DEV_DEPLOY_METHOD != 'ssm'
+        env:
+          ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
+          GHCR_USER: ${{ secrets.GHCR_PULL_TOKEN && vars.GHCR_PULL_USER || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || github.token }}
+        run: |
+          # shellcheck disable=SC2029 # $DEPLOY_DIR and $GHCR_USER are meant to expand locally
+          [ -n "$ENV_FILE" ] || { echo "::error::secret DEV_ENV_FILE (environment dev) is empty"; exit 1; }
+          scp -q scripts/bootstrap-ec2.sh dev:/tmp/hrms-bootstrap-ec2.sh
+          ssh dev "sudo bash /tmp/hrms-bootstrap-ec2.sh \$(whoami) && sudo install -d -m 0750 -o \$(whoami) -g \$(whoami) $DEPLOY_DIR"
+          cp "$RUNNER_TEMP/versions.prev.env" environments/dev/versions.prev.env
+          cp scripts/deploy-dev.sh environments/dev/deploy-dev.sh
+          rsync -az --chmod=D750,F640 --exclude .env.example environments/dev/ "dev:$DEPLOY_DIR/"
+          ssh dev "chmod 750 $DEPLOY_DIR/deploy-dev.sh $DEPLOY_DIR/bin/*"
+          printf '%s\n' "$ENV_FILE" | ssh dev "umask 077 && cat > $DEPLOY_DIR/.env.new && mv $DEPLOY_DIR/.env.new $DEPLOY_DIR/.env"
+          printf '%s' "$GHCR_TOKEN" | ssh dev "docker login ghcr.io -u '$GHCR_USER' --password-stdin" >/dev/null
+
+      - name: Deploy
+        id: deploy
+        if: steps.tags.outputs.ready == 'true' && vars.DEV_DEPLOY_METHOD != 'ssm'
+        run: |
+          # shellcheck disable=SC2029
+          ssh dev "$DEPLOY_DIR/deploy-dev.sh"
+
+      # ---------------------------------------------------------------- SSM path (optional; port 22 can be closed)
+      # Needs vars DEV_DEPLOY_METHOD=ssm, DEV_AWS_ROLE_ARN, DEV_INSTANCE_ID, DEV_ARTIFACT_BUCKET; the instance role
+      # must read s3://$DEV_ARTIFACT_BUCKET/hrms-dev/* and SSM parameters /hrms/dev/*. See docs/RUNBOOK.md.
+      - name: AWS credentials (SSM path)
+        if: steps.tags.outputs.ready == 'true' && vars.DEV_DEPLOY_METHOD == 'ssm'
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.DEV_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
+      - name: Deploy via SSM Run Command
+        id: deploy_ssm
+        if: steps.tags.outputs.ready == 'true' && vars.DEV_DEPLOY_METHOD == 'ssm'
+        env:
+          ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
+          BUCKET: ${{ vars.DEV_ARTIFACT_BUCKET }}
+          INSTANCE: ${{ vars.DEV_INSTANCE_ID }}
+          GHCR_USER: ${{ secrets.GHCR_PULL_TOKEN && vars.GHCR_PULL_USER || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || github.token }}
+        run: scripts/lib/ssm-deploy-dev.sh "$RUNNER_TEMP/versions.prev.env"
+
+      # ---------------------------------------------------------------- verify / roll back
+      - name: Public smoke test
+        id: smoke
+        if: steps.tags.outputs.ready == 'true'
+        continue-on-error: ${{ vars.DEV_SMOKE_REQUIRED == 'false' }}
+        run: scripts/smoke-test.sh "https://${{ vars.DEV_SITE }}" --expect-version "${{ steps.tags.outputs.frontend }}"
+
+      - name: Roll back to the previous versions
+        if: failure() && steps.tags.outputs.ready == 'true'
+        env:
+          BOT_KIND: ${{ steps.bot.outputs.kind }}
+        run: |
+          # shellcheck disable=SC2029
+          echo "::warning::Deployment failed; restoring the previous versions"
+          if [ "${{ vars.DEV_DEPLOY_METHOD }}" = "ssm" ]; then ROLLBACK=1 scripts/lib/ssm-deploy-dev.sh "$RUNNER_TEMP/versions.prev.env" || true
+          else ssh dev "$DEPLOY_DIR/deploy-dev.sh --rollback" || echo "::error::rollback deploy failed too; check the host"; fi
+          if [ -n "${BUMP_SHA:-}" ]; then
+            git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
+            git revert --no-edit "$BUMP_SHA" && git commit --amend -qm "revert(dev): failed deploy of ${{ steps.tags.outputs.backend }}/${{ steps.tags.outputs.frontend }} [skip ci]" \
+              -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase origin main; sleep $((i * 3)); done
+          fi
+
+      - name: GHCR logout and cleanup
+        if: always() && vars.DEV_DEPLOY_METHOD != 'ssm'
+        run: |
+          [ -f ~/.ssh/config ] && ssh dev "docker logout ghcr.io >/dev/null 2>&1; rm -f /tmp/hrms-bootstrap-ec2.sh" || true
+          rm -f ~/.ssh/id_deploy
+
+      - name: Summary and notification
+        if: always()
+        env:
+          WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+          RESULT: ${{ job.status }}
+          SITE: ${{ vars.DEV_SITE }}
+          BACKEND: ${{ steps.tags.outputs.backend }}
+          FRONTEND: ${{ steps.tags.outputs.frontend }}
+          READY: ${{ steps.tags.outputs.ready }}
+          REASON: ${{ steps.tags.outputs.reason }}
+        run: |
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            echo "### Dev deploy: $RESULT"
+            echo "| | |"; echo "|---|---|"
+            echo "| Site | https://$SITE |"; echo "| Backend | \`$BACKEND\` |"; echo "| Frontend | \`$FRONTEND\` |"
+            echo "| Trigger | $REASON |"; echo "| Deployed | $READY |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$WEBHOOK" ]; then
+            jq -n --arg t "HRMS dev deploy $RESULT: backend $BACKEND, frontend $FRONTEND — $run" '{text: $t}' \
+              | curl -fsS -X POST -H 'content-type: application/json' --data @- "$WEBHOOK" >/dev/null || echo "::warning::webhook failed"
+          fi

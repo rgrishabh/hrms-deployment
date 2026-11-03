@@ -1,0 +1,146 @@
+name: Deploy prod
+# Runs when a change to environments/prod/<slug>/versions.env reaches main (a merged release PR).
+# Per customer, after the approval required by GitHub Environment prod-<slug>:
+#   verify cosign signatures -> deploy-prod.sh (snapshot, migrations as one-off ECS tasks, both
+#   services, circuit breaker, smoke test, restore previous task definitions on failure)
+# On failure the bot reverts that customer's versions.env so git matches what is running, and alerts.
+on:
+  push:
+    branches: [main]
+    paths:
+      - environments/prod/*/versions.env
+  workflow_dispatch:
+    inputs:
+      customer:
+        description: Customer slug to (re)deploy from its current versions.env
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      any: ${{ steps.m.outputs.any }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - id: m
+        env:
+          BEFORE: ${{ github.event.before }}
+          ONE: ${{ inputs.customer }}
+        run: |
+          if [ -n "$ONE" ]; then slugs="$ONE"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then slugs=""
+          else slugs=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" -- 'environments/prod/*/versions.env' | cut -d/ -f3 | sort -u | grep -vx _template || true); fi
+          matrix=$(jq -c --arg s "$slugs" '[.customers[] | select(.enabled == true) | select(.slug as $x | ($s | split("\n")) | index($x))]' environments/prod/customers.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "any=$([ "$matrix" = "[]" ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+          echo "### Deploy prod: $(jq -r 'map(.slug) | join(", ")' <<<"$matrix")" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        customer: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    environment:
+      name: prod-${{ matrix.customer.slug }}
+      url: https://${{ matrix.customer.domain }}
+    concurrency:
+      group: deploy-prod-${{ matrix.customer.slug }}
+      cancel-in-progress: false
+    permissions:
+      contents: write   # revert versions.env on failure
+      packages: read    # read signatures from GHCR
+      id-token: write   # AWS OIDC
+    env:
+      SLUG: ${{ matrix.customer.slug }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - id: bot
+        uses: ./.github/actions/bot-token
+        with:
+          app-id: ${{ vars.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          fallback: ${{ github.token }}
+      - name: Read versions
+        id: v
+        run: |
+          f="environments/prod/$SLUG/versions.env"
+          # shellcheck disable=SC1090
+          . "$f"
+          for t in "$BACKEND_TAG" "$FRONTEND_TAG"; do [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$f: '$t' is not an immutable vX.Y.Z tag"; exit 1; }; done
+          owner=${OWNER,,}
+          { echo "backend=ghcr.io/$owner/hrms-backend:$BACKEND_TAG"; echo "frontend=ghcr.io/$owner/hrms-frontend:$FRONTEND_TAG"; } >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - name: Verify signatures and pin digests
+        id: verify
+        env:
+          GHCR_USER: ${{ secrets.GHCR_PULL_TOKEN && vars.GHCR_PULL_USER || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || github.token }}
+          BACKEND: ${{ steps.v.outputs.backend }}
+          FRONTEND: ${{ steps.v.outputs.frontend }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io -u "$GHCR_USER" --password-stdin
+          verify() {  # signed by the shared publish workflow on main, built from the app's own repo
+            cosign verify "$1" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "^https://github.com/$OWNER/hrms-deployment/\.github/workflows/_app-publish\.yml@refs/heads/main$" \
+              --certificate-github-workflow-repository "$OWNER/hrms-$2" \
+              | jq -r '.[0].critical.image."docker-manifest-digest"'
+          }
+          bd=$(verify "$BACKEND" backend); fd=$(verify "$FRONTEND" frontend)
+          [[ "$bd" == sha256:* && "$fd" == sha256:* ]] || { echo "::error::signature verification failed"; exit 1; }
+          { echo "backend=$BACKEND@$bd"; echo "frontend=$FRONTEND@$fd"; } >> "$GITHUB_OUTPUT"
+          echo "Signatures verified: \`$BACKEND@$bd\`, \`$FRONTEND@$fd\`" >> "$GITHUB_STEP_SUMMARY"
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ matrix.customer.region }}
+      - name: Check account
+        env:
+          EXPECTED: ${{ matrix.customer.account_id }}
+        run: |
+          actual=$(aws sts get-caller-identity --query Account --output text)
+          [ "$actual" = "$EXPECTED" ] || { echo "::error::role is in account $actual, customers.json says $EXPECTED"; exit 1; }
+      - name: Deploy
+        env:
+          AWS_REGION: ${{ matrix.customer.region }}
+        run: scripts/deploy-prod.sh --backend "${{ steps.verify.outputs.backend }}" --frontend "${{ steps.verify.outputs.frontend }}"
+
+      - name: Revert versions.env and alert
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+          AWS_REGION: ${{ matrix.customer.region }}
+        run: |
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          f="environments/prod/$SLUG/versions.env"
+          prev=$(git log -n 1 --format=%H "$GITHUB_SHA^" -- "$f" || true)
+          if [ -n "$prev" ] && [ "${{ github.event_name }}" = push ]; then
+            git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
+            git config user.name "hrms-deploy-bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git fetch -q origin main && git checkout -q -B revert-tmp origin/main
+            git show "$prev:$f" > "$f"
+            if ! git diff --quiet -- "$f"; then
+              git commit -qm "revert(prod/$SLUG): failed deploy [skip ci]" -m "Run: $run" -- "$f"
+              for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase -q origin main; sleep $((i * 3)); done
+            fi
+          fi
+          topic=$(aws ssm get-parameter --name /hrms/release/alarm_topic --query Parameter.Value --output text 2>/dev/null || true)
+          msg="HRMS prod deploy FAILED for $SLUG ($run). Services were restored to the previous task definitions if the rollout had started."
+          [ -z "$topic" ] || aws sns publish --topic-arn "$topic" --subject "HRMS deploy failed: $SLUG" --message "$msg" >/dev/null || true
+          [ -z "$WEBHOOK" ] || jq -n --arg t "$msg" '{text: $t}' | curl -fsS -X POST -H 'content-type: application/json' --data @- "$WEBHOOK" >/dev/null || true

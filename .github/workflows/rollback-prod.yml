@@ -1,0 +1,116 @@
+name: Rollback prod
+# One click: redeploy a customer's PREVIOUS versions (or given tags) without running migrations
+# (they are expand/contract; the backend stays ready on a newer schema). Needs the prod-<slug> approval.
+# Records the result in environments/prod/<slug>/versions.env so git matches production.
+on:
+  workflow_dispatch:
+    inputs:
+      customer:
+        description: Customer slug
+        required: true
+      backend_tag:
+        description: "Backend vX.Y.Z (empty = the previous value in git history)"
+        required: false
+      frontend_tag:
+        description: "Frontend vX.Y.Z (empty = the previous value in git history)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod-${{ inputs.customer }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: prod-${{ inputs.customer }}
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+    env:
+      SLUG: ${{ inputs.customer }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - id: bot
+        uses: ./.github/actions/bot-token
+        with:
+          app-id: ${{ vars.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          fallback: ${{ github.token }}
+      - name: Resolve target versions
+        id: t
+        env:
+          IN_B: ${{ inputs.backend_tag }}
+          IN_F: ${{ inputs.frontend_tag }}
+        run: |
+          [[ "$SLUG" =~ ^[a-z0-9-]+$ ]] || { echo "::error::bad slug"; exit 1; }
+          f="environments/prod/$SLUG/versions.env"
+          c=$(jq -c --arg s "$SLUG" '.customers[] | select(.slug == $s)' environments/prod/customers.json)
+          [ -n "$c" ] || { echo "::error::$SLUG not in customers.json"; exit 1; }
+          get() { grep -E "^$1=" | cut -d= -f2; }
+          cur_b=$(get BACKEND_TAG < "$f"); cur_f=$(get FRONTEND_TAG < "$f")
+          # previous distinct value of each tag in history
+          prev() { git log --format=%H -- "$f" | while read -r h; do v=$(git show "$h:$f" | get "$1"); [ "$v" != "$2" ] && { echo "$v"; break; }; done; }
+          b=${IN_B:-$(prev BACKEND_TAG "$cur_b")}; fr=${IN_F:-$(prev FRONTEND_TAG "$cur_f")}
+          b=${b:-$cur_b}; fr=${fr:-$cur_f}
+          for t in "$b" "$fr"; do [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$t' is not vX.Y.Z"; exit 1; }; done
+          owner=${OWNER,,}
+          {
+            echo "region=$(jq -r .region <<<"$c")"; echo "account=$(jq -r .account_id <<<"$c")"
+            echo "backend_tag=$b"; echo "frontend_tag=$fr"
+            echo "backend=ghcr.io/$owner/hrms-backend:$b"; echo "frontend=ghcr.io/$owner/hrms-frontend:$fr"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Rollback $SLUG: backend $cur_b → $b, frontend $cur_f → $fr" >> "$GITHUB_STEP_SUMMARY"
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - name: Verify signatures
+        id: verify
+        env:
+          GHCR_USER: ${{ secrets.GHCR_PULL_TOKEN && vars.GHCR_PULL_USER || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || github.token }}
+          BACKEND: ${{ steps.t.outputs.backend }}
+          FRONTEND: ${{ steps.t.outputs.frontend }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io -u "$GHCR_USER" --password-stdin
+          verify() {
+            cosign verify "$1" --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "^https://github.com/$OWNER/hrms-deployment/\.github/workflows/_app-publish\.yml@refs/heads/main$" \
+              --certificate-github-workflow-repository "$OWNER/hrms-$2" | jq -r '.[0].critical.image."docker-manifest-digest"'
+          }
+          bd=$(verify "$BACKEND" backend); fd=$(verify "$FRONTEND" frontend)
+          [[ "$bd" == sha256:* && "$fd" == sha256:* ]] || { echo "::error::signature verification failed"; exit 1; }
+          { echo "backend=$BACKEND@$bd"; echo "frontend=$FRONTEND@$fd"; } >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ steps.t.outputs.region }}
+      - name: Check account
+        env:
+          EXPECTED: ${{ steps.t.outputs.account }}
+        run: |
+          actual=$(aws sts get-caller-identity --query Account --output text)
+          [ "$actual" = "$EXPECTED" ] || { echo "::error::role is in account $actual, expected $EXPECTED"; exit 1; }
+      - name: Deploy previous versions (no migrations)
+        env:
+          AWS_REGION: ${{ steps.t.outputs.region }}
+        run: scripts/deploy-prod.sh --backend "${{ steps.verify.outputs.backend }}" --frontend "${{ steps.verify.outputs.frontend }}" --skip-migrations
+      - name: Record in git
+        env:
+          B: ${{ steps.t.outputs.backend_tag }}
+          F: ${{ steps.t.outputs.frontend_tag }}
+        run: |
+          f="environments/prod/$SLUG/versions.env"
+          sed -i -E -e "s#^BACKEND_TAG=.*#BACKEND_TAG=$B#" -e "s#^FRONTEND_TAG=.*#FRONTEND_TAG=$F#" "$f"
+          git diff --quiet -- "$f" && exit 0
+          git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
+          git config user.name "hrms-deploy-bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qm "revert(prod/$SLUG): rollback to backend $B, frontend $F [skip ci]" -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID by $GITHUB_ACTOR" -- "$f"
+          for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase -q origin main; sleep $((i * 3)); done

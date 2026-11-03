@@ -1,0 +1,163 @@
+name: App publish (reusable)
+# Called by hrms-backend / hrms-frontend after CI passes.
+#   mode=develop : push :sha-<short> and :develop, then repository_dispatch "deploy-dev"
+#   mode=release : push :vX.Y.Z, :latest and :sha-<short>, then repository_dispatch "release-prod"
+# Every push carries an SBOM and max provenance attestation, is scanned by Trivy (CRITICAL
+# blocks the dispatch) and is signed with cosign (keyless, GitHub OIDC). Deployments use the
+# immutable tag (and verify the signature); "latest" and "develop" are never deployed.
+on:
+  workflow_call:
+    inputs:
+      app:
+        type: string
+        required: true
+      mode:
+        type: string
+        required: true
+      version:
+        type: string
+        default: ""
+      deployment-repo:
+        type: string
+        default: hrms-deployment
+    secrets:
+      DEPLOY_APP_PRIVATE_KEY:
+        required: false
+      DEPLOY_REPO_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Tags
+        id: meta
+        env:
+          APP: ${{ inputs.app }}
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          image="ghcr.io/${OWNER,,}/hrms-$APP"
+          short="sha-${GITHUB_SHA::7}"
+          case "$MODE" in
+            develop) tag="$short"; tags="$image:$short,$image:develop" ;;
+            release)
+              [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::release needs version vX.Y.Z (got '$VERSION')"; exit 1; }
+              tag="$VERSION"; tags="$image:$VERSION,$image:latest,$image:$short" ;;
+            *) echo "::error::mode must be develop or release"; exit 1 ;;
+          esac
+          { echo "image=$image"; echo "tag=$tag"; echo "tags=$tags"; } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push (SBOM + provenance)
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.tag }}
+            REVISION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=hrms-${{ inputs.app }}
+          cache-to: type=gha,mode=max,scope=hrms-${{ inputs.app }}
+      - name: Trivy on the pushed image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - name: Sign (keyless)
+        env:
+          REF: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$REF"
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Published \`$IMAGE:$TAG\`"
+            echo "- digest: \`$DIGEST\`"
+            echo "- SBOM + provenance attached; signed with cosign (keyless)"
+            echo "- verify: \`cosign verify $IMAGE@$DIGEST --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-repository $GITHUB_REPOSITORY --certificate-identity-regexp '^https://github.com/$GITHUB_REPOSITORY_OWNER/hrms-deployment/'\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Token for the deployment repo (GitHub App preferred)
+        id: app
+        if: vars.DEPLOY_APP_ID != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.deployment-repo }}
+      - name: Release notes
+        id: notes
+        if: inputs.mode == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          notes=$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null | head -c 20000 || true)
+          { echo "notes<<HRMS_EOF"; echo "${notes:-No release notes.}"; echo "HRMS_EOF"; } >> "$GITHUB_OUTPUT"
+      - name: repository_dispatch
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.DEPLOY_REPO_TOKEN }}
+          EVENT: ${{ inputs.mode == 'release' && 'release-prod' || 'deploy-dev' }}
+          TARGET: ${{ github.repository_owner }}/${{ inputs.deployment-repo }}
+          APP: ${{ inputs.app }}
+          TAG: ${{ needs.publish.outputs.tag }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set repository variable DEPLOY_APP_ID + secret DEPLOY_APP_PRIVATE_KEY (GitHub App), or secret DEPLOY_REPO_TOKEN (fine-grained PAT: $TARGET, Contents read/write)"
+            exit 1
+          fi
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          jq -n --arg event "$EVENT" --arg app "$APP" --arg tag "$TAG" --arg digest "$DIGEST" --arg image "$IMAGE" \
+                --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" --arg run "$run_url" --arg notes "$NOTES" \
+            '{event_type: $event, client_payload: {app: $app, tag: $tag, digest: $digest, image: $image, sha: $sha, repo: $repo, run_url: $run, notes: $notes}}' \
+            | gh api --method POST "repos/$TARGET/dispatches" --input -
+          echo "dispatched $EVENT ($APP $TAG) to $TARGET" | tee -a "$GITHUB_STEP_SUMMARY"
