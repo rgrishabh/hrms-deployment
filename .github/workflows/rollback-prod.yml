@@ -39,6 +39,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false   # pushes use the bot token; a persisted GITHUB_TOKEN header would override it
       - id: bot
         uses: ./.github/actions/bot-token
         with:
@@ -113,4 +114,4 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
           git config user.name "hrms-deploy-bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -qm "revert(prod/$SLUG): rollback to backend $B, frontend $F [skip ci]" -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID by $GITHUB_ACTOR" -- "$f"
-          for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase -q origin main; sleep $((i * 3)); done
+          pushed=0; for i in 1 2 3; do if git push origin HEAD:main; then pushed=1; break; fi; git pull --rebase -q origin main; sleep $((i * 3)); done; [ "$pushed" = 1 ] || { echo "::error::could not push to main (token lacks bypass of the main ruleset?)"; exit 1; }
