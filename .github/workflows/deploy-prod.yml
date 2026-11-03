@@ -69,6 +69,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false   # pushes use the bot token; a persisted GITHUB_TOKEN header would override it
       - id: bot
         uses: ./.github/actions/bot-token
         with:
@@ -137,7 +138,7 @@ jobs:
             git show "$prev:$f" > "$f"
             if ! git diff --quiet -- "$f"; then
               git commit -qm "revert(prod/$SLUG): failed deploy [skip ci]" -m "Run: $run" -- "$f"
-              for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase -q origin main; sleep $((i * 3)); done
+              pushed=0; for i in 1 2 3; do if git push origin HEAD:main; then pushed=1; break; fi; git pull --rebase -q origin main; sleep $((i * 3)); done; [ "$pushed" = 1 ] || { echo "::error::could not push to main (token lacks bypass of the main ruleset?)"; exit 1; }
             fi
           fi
           topic=$(aws ssm get-parameter --name /hrms/release/alarm_topic --query Parameter.Value --output text 2>/dev/null || true)

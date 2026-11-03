@@ -46,6 +46,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
+          persist-credentials: false   # pushes use the bot token; a persisted GITHUB_TOKEN header would override it
       - id: bot
         uses: ./.github/actions/bot-token
         with:
@@ -97,7 +98,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -qm "chore(dev): deploy backend=${{ steps.tags.outputs.backend }} frontend=${{ steps.tags.outputs.frontend }} [skip ci]" \
                      -m "Reason: $REASON" -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" environments/dev/versions.env
-          for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase origin main; sleep $((i * 3)); done
+          pushed=0; for i in 1 2 3; do if git push origin HEAD:main; then pushed=1; break; fi; git pull --rebase origin main; sleep $((i * 3)); done; [ "$pushed" = 1 ] || { echo "::error::could not push to main (token lacks bypass of the main ruleset?)"; exit 1; }
           echo "BUMP_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       # ---------------------------------------------------------------- SSH path (default)
@@ -181,7 +182,7 @@ jobs:
             git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
             git revert --no-edit "$BUMP_SHA" && git commit --amend -qm "revert(dev): failed deploy of ${{ steps.tags.outputs.backend }}/${{ steps.tags.outputs.frontend }} [skip ci]" \
               -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase origin main; sleep $((i * 3)); done
+            pushed=0; for i in 1 2 3; do if git push origin HEAD:main; then pushed=1; break; fi; git pull --rebase origin main; sleep $((i * 3)); done; [ "$pushed" = 1 ] || { echo "::error::could not push to main (token lacks bypass of the main ruleset?)"; exit 1; }
           fi
 
       - name: GHCR logout and cleanup
