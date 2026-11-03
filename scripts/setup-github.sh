@@ -131,6 +131,9 @@ ruleset() {  # repo, name, branch, checks-json, bypass-json
         require_code_owner_review: false, require_last_push_approval: false, required_review_thread_resolution: true}}]
       + (if ($checks | length) > 0 then [{type: "required_status_checks", parameters: {strict_required_status_checks_policy: false,
           required_status_checks: [$checks[] | {context: .}]}}] else [] end))}')
+  if ! api "repos/$OWNER/$repo/rulesets" >/dev/null 2>&1; then
+    warn "$repo: rulesets on private repos need GitHub Pro/Team (or a public repo); '$name' not applied"; return 0
+  fi
   id=$(api "repos/$OWNER/$repo/rulesets" --jq ".[] | select(.name == \"$name\") | .id" 2>/dev/null || true)
   if [ -n "$id" ]; then api -X PUT "repos/$OWNER/$repo/rulesets/$id" --input - <<<"$body" >/dev/null 2>&1 || warn "$repo: could not update ruleset $name"
   else api -X POST "repos/$OWNER/$repo/rulesets" --input - <<<"$body" >/dev/null 2>&1 \
