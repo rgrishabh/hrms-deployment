@@ -468,6 +468,7 @@ resource "aws_ssm_parameter" "release" {
     cluster        = aws_ecs_cluster.this.name
     service        = aws_ecs_service.api.name
     web_service    = aws_ecs_service.web.name
+    alarm_topic    = aws_sns_topic.alarms.arn
     subnets        = join(",", aws_subnet.app[*].id)
     ops_sg         = aws_security_group.ops.id
     domain         = local.primary
