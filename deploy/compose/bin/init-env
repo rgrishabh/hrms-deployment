@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Fill empty secrets in .env with strong random values and lock the file down.
+# Never overwrites a secret that is already set (rotation is a separate, deliberate step:
+# see DEPLOYMENT.md "Rotate credentials").
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[ -f .env ] || { echo "No .env here. Run: cp .env.example .env" >&2; exit 1; }
+command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 1; }
+gen() {
+  case "$1" in
+    DATA_ENCRYPTION_KEY) openssl rand -base64 32 ;;
+    *) openssl rand -hex 24 ;;   # 48 hex chars: strong and safe inside connection URLs
+  esac
+}
+umask 077
+tmp=$(mktemp .env.XXXXXX)
+changed=0
+while IFS= read -r line || [ -n "$line" ]; do
+  key=${line%%=*}
+  case "$key" in
+    POSTGRES_SUPERUSER_PASSWORD|DB_OWNER_PASSWORD|DB_APP_PASSWORD|DATA_ENCRYPTION_KEY)
+      if [ "$line" = "$key=" ]; then line="$key=$(gen "$key")"; changed=$((changed+1)); fi ;;
+  esac
+  printf '%s\n' "$line" >> "$tmp"
+done < .env
+mv "$tmp" .env
+chmod 600 .env
+echo "generated $changed secret(s); .env is now mode 600"
+grep -v '^[[:space:]]*#' .env | grep -q '<' && echo "Note: .env still contains <placeholders>; fill them in before 'docker compose up'." || true

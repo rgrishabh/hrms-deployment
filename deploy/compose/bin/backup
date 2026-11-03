@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Logical backup of THIS installation's database (custom-format pg_dump + SHA-256).
+# Usage: bin/backup [output_dir]   (default ./backups). Copy backups off the VM, encrypted.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+OUT=${1:-./backups}
+umask 077; mkdir -p "$OUT"
+PROJECT=$(docker compose config --format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["name"])')
+FILE="$OUT/${PROJECT}-$(date -u +%Y%m%dT%H%M%SZ).dump"
+docker compose exec -T db pg_dump -U postgres --format=custom --no-owner hrms > "$FILE"
+# Documents volume (the database references these files by key; back up both together).
+DOCS="${FILE%.dump}.documents.tar.gz"
+docker compose exec -T app tar -C /app/storage -czf - . > "$DOCS"
+( cd "$(dirname "$FILE")" && for f in "$(basename "$FILE")" "$(basename "$DOCS")"; do
+    sha256sum "$f" > "$f.sha256" 2>/dev/null || shasum -a 256 "$f" > "$f.sha256"; done )
+echo "backup written: $FILE"
+echo "documents written: $DOCS"

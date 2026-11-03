@@ -1,0 +1,194 @@
+# One customer installation = one copy of this directory with its own .env and branding/.
+# Every customer gets its own Compose project (COMPOSE_PROJECT_NAME), so its own
+# containers, networks and volumes (database data). Nothing is shared between customers.
+#
+#   bin/init-env              # once: create .env with strong generated secrets
+#   docker compose up -d      # provision -> migrate -> app (in that order, automatically)
+#   docker compose --profile tools run --rm bootstrap   # once: first administrator setup link
+#
+# See DEPLOYMENT.md (Docker Compose section) for the full procedure.
+
+name: ${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME in .env (e.g. hrms-customer-a)}
+
+x-image: &image ${HRMS_IMAGE:?Set HRMS_IMAGE in .env (e.g. registry.example.com/labhrms:1.4.0)}
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+
+# Installation identity: shared by the app and the bootstrap job so both see the same domains/name.
+x-identity: &identity
+  APP_URL: ${APP_URL:?Set APP_URL in .env (https://hrms.customer.example)}
+  APP_EXTRA_DOMAINS: ${APP_EXTRA_DOMAINS:-}
+  ORGANIZATION_NAME: ${ORGANIZATION_NAME:?Set ORGANIZATION_NAME in .env}
+  ORGANIZATION_TIMEZONE: ${ORGANIZATION_TIMEZONE:-Asia/Kolkata}
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Run bin/init-env to generate secrets}
+      POSTGRES_DB: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks: [internal]
+    # No ports published: the database is reachable only from this project's internal network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 256mb
+
+  # Creates/rotates the hrms_owner and hrms_app roles and the database (idempotent). Runs on every `up`.
+  provision:
+    image: *image
+    <<: *hardening
+    command: ["node", "dist/src/db/provision.js"]
+    environment:
+      DB_HOST: db
+      DB_NAME: hrms
+      DB_ADMIN_USER: postgres
+      DB_ADMIN_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?Run bin/init-env to generate secrets}
+      DATABASE_SSL: disable # private Docker network, database never exposed
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal]
+    restart: "no"
+
+  # Applies pending migrations (forward-only, checksummed, serialized). Runs on every `up`.
+  migrate:
+    image: *image
+    <<: *hardening
+    command: ["node", "dist/src/db/migrate.js"]
+    environment:
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD}@db:5432/hrms
+      DATABASE_SSL: disable
+    depends_on:
+      provision: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
+  app:
+    image: *image
+    <<: *hardening
+    restart: unless-stopped
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      <<: *identity
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "4000"
+      DATABASE_URL: postgres://hrms_app:${DB_APP_PASSWORD}@db:5432/hrms
+      DATABASE_SSL: disable
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Run bin/init-env to generate secrets}
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      ENABLED_MODULES: ${ENABLED_MODULES:-default}
+      JOBS_ENABLED: ${JOBS_ENABLED:-true}
+      MFA_ENFORCEMENT: ${MFA_ENFORCEMENT:-privileged}
+      STORAGE_DRIVER: local
+      STORAGE_PATH: /app/storage
+      STORAGE_MAX_FILE_MB: ${STORAGE_MAX_FILE_MB:-10}
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-disabled}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-}
+      WEB_DIST_DIR: /app/web
+      BRANDING_DIR: /app/branding
+      PRODUCT_NAME: ${PRODUCT_NAME:-}
+      BRAND_NAME: ${BRAND_NAME:-}
+      BRAND_SHORT_NAME: ${BRAND_SHORT_NAME:-}
+      BRAND_LOGO_URL: ${BRAND_LOGO_URL:-}
+      BRAND_FAVICON_URL: ${BRAND_FAVICON_URL:-}
+      BRAND_PRIMARY_COLOR: ${BRAND_PRIMARY_COLOR:-}
+      BRAND_SECONDARY_COLOR: ${BRAND_SECONDARY_COLOR:-}
+      BRAND_ACCENT_COLOR: ${BRAND_ACCENT_COLOR:-}
+      BRAND_LOGIN_MESSAGE: ${BRAND_LOGIN_MESSAGE:-}
+      BRAND_SUPPORT_EMAIL: ${BRAND_SUPPORT_EMAIL:-}
+      BRAND_SUPPORT_PHONE: ${BRAND_SUPPORT_PHONE:-}
+      BRAND_HELP_URL: ${BRAND_HELP_URL:-}
+      ORGANIZATION_LEGAL_NAME: ${ORGANIZATION_LEGAL_NAME:-}
+      ORGANIZATION_COUNTRY: ${ORGANIZATION_COUNTRY:-IN}
+      ORGANIZATION_CURRENCY: ${ORGANIZATION_CURRENCY:-INR}
+      ORGANIZATION_DATE_FORMAT: ${ORGANIZATION_DATE_FORMAT:-DD/MM/YYYY}
+      ORGANIZATION_FY_START_MONTH: ${ORGANIZATION_FY_START_MONTH:-4}
+    volumes:
+      - ./branding:/app/branding:ro
+      - app-storage:/app/storage   # this installation's documents (back up with bin/backup)
+    networks: [internal, edge]
+    # Bound to localhost by default: put the bundled Caddy (profile "https") or your own
+    # reverse proxy in front. Never expose plain HTTP publicly (COOKIE_SECURE requires HTTPS).
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health/ready >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # One-off: create the organization + first administrator (prints a one-time setup link).
+  #   docker compose --profile tools run --rm bootstrap
+  #   docker compose --profile tools run --rm bootstrap --reset-admin   (recovery)
+  bootstrap:
+    profiles: ["tools"]
+    image: *image
+    <<: *hardening
+    entrypoint: ["node", "dist/src/db/bootstrap.js"]
+    environment:
+      <<: *identity
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD}@db:5432/hrms
+      DATABASE_SSL: disable
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL in .env}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
+  # Optional automatic HTTPS (Let's Encrypt) when this VM serves only this customer:
+  #   docker compose --profile https up -d
+  caddy:
+    profiles: ["https"]
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    depends_on:
+      app: { condition: service_healthy }
+    environment:
+      APP_DOMAINS: ${CADDY_SITE_ADDRESSES:-} # required when using the https profile
+      APP_URL: ${APP_URL}
+      CADDY_REDIRECT_ADDRESSES: ${CADDY_REDIRECT_ADDRESSES:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+
+networks:
+  internal:
+    internal: true # no route outside the host: database and one-off jobs only talk to each other
+  edge: {}
+
+volumes:
+  db-data:
+  app-storage:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,26 @@
+# Automatic HTTPS for this installation (profile "https").
+# CADDY_SITE_ADDRESSES: comma-separated hostnames from APP_URL / APP_EXTRA_DOMAINS,
+# e.g. "hrms.customer-a.example.com, hr.customer-a.example.com".
+# DNS for those names must point at this VM, and ports 80 + 443 must be reachable, before starting Caddy.
+# Let's Encrypt does not require an email; to receive expiry notices add a global block:
+#   { email ops@example.com }
+
+{$APP_DOMAINS} {
+	encode zstd gzip
+	# Caddy keeps the original Host header, which the application uses to match its configured domains.
+	reverse_proxy app:4000
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+# Optional: plain-HTTP addresses (e.g. the server IP) that should redirect to APP_URL.
+# CADDY_REDIRECT_ADDRESSES="http://203.0.113.10"; unused default when not set.
+{$CADDY_REDIRECT_ADDRESSES:http://redirect.invalid} {
+	redir {$APP_URL}{uri} permanent
+}
