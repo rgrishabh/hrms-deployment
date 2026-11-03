@@ -30,7 +30,7 @@ jobs:
           /tmp/actionlint -color
       - name: shellcheck
         run: |
-          shellcheck scripts/*.sh scripts/lib/*.sh environments/dev/bin/dc environments/dev/bin/backup environments/dev/bin/restore environments/dev/bin/init-env
+          shellcheck scripts/*.sh scripts/lib/*.sh environments/dev/bin/dc environments/dev/bin/backup environments/dev/bin/restore environments/dev/bin/init-env environments/dev/bin/demo-data
           shellcheck -s sh environments/dev/bin/backup-loop.sh
       - name: Compose config (sample values)
         working-directory: environments/dev

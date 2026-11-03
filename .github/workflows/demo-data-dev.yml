@@ -1,0 +1,81 @@
+name: Load dev demo data
+# Manual only. Fills the dev installation with SYNTHETIC demo data (a 60-person testing laboratory and
+# 10 persona logins) by running environments/dev/bin/demo-data on the dev host.
+# - The backend refuses when any real (non-demo) employee exists and is a no-op when demo data is present.
+# - The logins and password are written on the host to /opt/hrms/dev/demo-credentials.txt (mode 600);
+#   they are never printed to this log. Read them with:  ssh <user>@<host> 'cat /opt/hrms/dev/demo-credentials.txt'
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "load-demo-data" to confirm (dev only)'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev   # never alongside a deploy
+  cancel-in-progress: false
+
+env:
+  DEPLOY_DIR: /opt/hrms/dev
+
+jobs:
+  demo:
+    if: inputs.confirm == 'load-demo-data'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: dev
+      url: https://${{ vars.DEV_SITE }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: SSH setup (pinned host key)
+        env:
+          KEY: ${{ secrets.DEV_EC2_SSH_KEY }}
+          HOST_KEY: ${{ vars.DEV_EC2_HOST_KEY }}
+          HOST: ${{ vars.DEV_EC2_HOST }}
+          USER_: ${{ vars.DEV_EC2_USER }}
+        run: |
+          [ -n "$KEY" ] && [ -n "$HOST_KEY" ] && [ -n "$HOST" ] || { echo "::error::DEV_EC2_SSH_KEY (secret), DEV_EC2_HOST_KEY and DEV_EC2_HOST (vars) are required"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+          printf 'Host dev\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/id_deploy\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n' "$HOST" "${USER_:-ubuntu}" > ~/.ssh/config
+          ssh dev true
+
+      - name: Sync the compose file and script
+        run: |
+          # shellcheck disable=SC2029
+          scp -q environments/dev/docker-compose.yml "dev:$DEPLOY_DIR/docker-compose.yml"
+          scp -q environments/dev/bin/demo-data "dev:$DEPLOY_DIR/bin/demo-data"
+          ssh dev "chmod 750 $DEPLOY_DIR/bin/demo-data"
+
+      - name: Load demo data (credentials stay on the host)
+        run: |
+          # shellcheck disable=SC2029
+          ssh dev "$DEPLOY_DIR/bin/demo-data"
+
+      - name: Summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          SITE: ${{ vars.DEV_SITE }}
+          USER_: ${{ vars.DEV_EC2_USER }}
+          HOST: ${{ vars.DEV_EC2_HOST }}
+        run: |
+          rm -f ~/.ssh/id_deploy
+          {
+            echo "### Dev demo data: $RESULT"
+            echo "Site: https://$SITE"
+            echo
+            echo "Logins (synthetic) are on the host, mode 600:"
+            echo '```'
+            echo "ssh ${USER_:-ubuntu}@$HOST 'cat $DEPLOY_DIR/demo-credentials.txt'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

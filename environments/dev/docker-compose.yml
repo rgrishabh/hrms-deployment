@@ -242,6 +242,25 @@ services:
     networks: [internal]
     restart: "no"
 
+  # One-off, DEV/DEMO ONLY: fill an EMPTY, bootstrapped installation with a synthetic testing laboratory.
+  # Use bin/demo-data (sets DEMO_DATA_ALLOWED=true for that one run, stores the logins in a 600 file).
+  # The backend refuses if any real (non-demo) employee exists.
+  demo:
+    profiles: ["tools"]
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["demo"]
+    environment:
+      APP_URL: ${APP_URL}
+      ORGANIZATION_TIMEZONE: ${ORGANIZATION_TIMEZONE:-Asia/Kolkata}
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD}@db:5432/hrms
+      DATABASE_SSL: disable
+      DEMO_DATA_ALLOWED: ${DEMO_DATA_ALLOWED:-false}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
 networks:
   internal:
     internal: true # no route outside the host: database, backups and one-off jobs
