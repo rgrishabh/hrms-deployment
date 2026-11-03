@@ -17,7 +17,13 @@ output "acm_validation_records" {
 }
 
 output "release_role_arn" {
-  value = aws_iam_role.release.arn
+  description = "Set as the AWS_DEPLOY_ROLE_ARN variable of GitHub Environment prod-<slug>."
+  value       = aws_iam_role.release.arn
+}
+
+output "registry_credentials_secret_arn" {
+  description = "Fill once with scripts/set-registry-credentials.sh (GHCR read:packages token)."
+  value       = var.private_registry ? aws_secretsmanager_secret.registry[0].arn : null
 }
 
 output "bootstrap_admin_secret_arn" {

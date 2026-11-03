@@ -26,6 +26,7 @@ locals {
   partition  = data.aws_partition.this.partition
   azs        = slice(data.aws_availability_zones.available.names, 0, var.az_count)
   primary    = var.domains[0]
+  deploy_env = coalesce(var.github_deploy_environment, "prod-${var.customer_slug}")
   tags = merge(var.tags, {
     Application = "hrms"
     Customer    = var.customer_slug

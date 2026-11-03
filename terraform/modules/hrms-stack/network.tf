@@ -160,6 +160,40 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_api" {
   description                  = "To API tasks"
 }
 
+resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
+  security_group_id            = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.web.id
+  ip_protocol                  = "tcp"
+  from_port                    = 8080
+  to_port                      = 8080
+  description                  = "To frontend tasks"
+}
+
+resource "aws_security_group" "web" {
+  name        = "${local.name}-web"
+  description = "Frontend (static SPA) tasks"
+  vpc_id      = aws_vpc.this.id
+  tags        = local.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "web_from_alb" {
+  security_group_id            = aws_security_group.web.id
+  referenced_security_group_id = aws_security_group.alb.id
+  ip_protocol                  = "tcp"
+  from_port                    = 8080
+  to_port                      = 8080
+  description                  = "From ALB"
+}
+
+resource "aws_vpc_security_group_egress_rule" "web_https" {
+  security_group_id = aws_security_group.web.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  description       = "Image pull (GHCR) and CloudWatch Logs"
+}
+
 resource "aws_security_group" "api" {
   name        = "${local.name}-api"
   description = "API tasks"

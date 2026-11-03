@@ -162,12 +162,56 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+# Same-origin routing (session cookie + CSRF): API, health/readiness and branding files go to
+# the backend; everything else on the installation's hosts goes to the frontend (SPA).
+# Unknown Host headers still hit the default 404.
+locals {
+  backend_paths = { api = ["/api/*", "/branding/*"], health = ["/health*", "/ready"] }
+}
+
 resource "aws_lb_listener_rule" "api" {
+  for_each     = local.backend_paths
   listener_arn = aws_lb_listener.https.arn
-  priority     = 10
+  priority     = each.key == "api" ? 10 : 11
   action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
+  }
+  condition {
+    host_header {
+      values = var.domains
+    }
+  }
+  condition {
+    path_pattern {
+      values = each.value
+    }
+  }
+}
+
+resource "aws_lb_target_group" "web" {
+  name                 = "${local.name}-web"
+  port                 = 8080
+  protocol             = "HTTP"
+  target_type          = "ip"
+  vpc_id               = aws_vpc.this.id
+  deregistration_delay = 15
+  health_check {
+    path                = "/healthz"
+    matcher             = "200"
+    interval            = 15
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+  tags = local.tags
+}
+
+resource "aws_lb_listener_rule" "web" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 20
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
   }
   condition {
     host_header {

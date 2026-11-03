@@ -53,11 +53,10 @@ admin_email = "<it-admin@customer-domain>"
 admin_name  = "<Full Name>"
 
 # From the shared-services outputs.
-container_image    = "<shared-account-id>.dkr.ecr.ap-south-1.amazonaws.com/hrms-api:<tag>"
-ecr_repository_arn = "arn:aws:ecr:ap-south-1:<shared-account-id>:repository/hrms-api"
+backend_image  = "ghcr.io/rgrishabh/hrms-backend:v1.0.0"
+frontend_image = "ghcr.io/rgrishabh/hrms-frontend:v1.0.0"
 
-github_repository         = "rgrishabh/HRMS-POC"
-github_deploy_environment = "production"
+github_repository = "rgrishabh/hrms-deployment" # GitHub Environments infra-<slug> (Terraform) and prod-<slug> (deploys)
 
 db_instance_class  = "db.t4g.medium"
 db_multi_az        = true

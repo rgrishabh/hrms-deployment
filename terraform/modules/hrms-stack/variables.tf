@@ -64,8 +64,8 @@ variable "domains" {
   description = "Hostnames served by this deployment. The first is primary. Example: [\"hrms.acmelabs.in\"]."
   type        = list(string)
   validation {
-    condition     = length(var.domains) > 0
-    error_message = "At least one domain is required."
+    condition     = length(var.domains) > 0 && length(var.domains) <= 3
+    error_message = "Between one and three domains (ALB rules combine hosts with path patterns; 5 values per rule)."
   }
 }
 
@@ -109,14 +109,34 @@ variable "admin_name" {
   default = "Administrator"
 }
 
-variable "container_image" {
-  description = "Initial image URI (registry/repo:tag). Releases register new task definition revisions outside Terraform."
+variable "backend_image" {
+  description = "Initial backend image (ghcr.io/<owner>/hrms-backend:<tag>). Releases register new task definition revisions outside Terraform (deploy-prod workflow)."
   type        = string
+  validation {
+    condition     = !endswith(var.backend_image, ":latest")
+    error_message = "Use an immutable tag (vX.Y.Z or sha-<short>), never latest."
+  }
 }
 
-variable "ecr_repository_arn" {
-  description = "ARN of the shared ECR repository (Shared Services account) the tasks pull from."
+variable "frontend_image" {
+  description = "Initial frontend image (ghcr.io/<owner>/hrms-frontend:<tag>)."
   type        = string
+  validation {
+    condition     = !endswith(var.frontend_image, ":latest")
+    error_message = "Use an immutable tag (vX.Y.Z or sha-<short>), never latest."
+  }
+}
+
+variable "private_registry" {
+  description = "Images are in a private registry that needs credentials (GHCR). Creates the Secrets Manager secret hrms/registry-credentials ({\"username\",\"password\"}), filled once by scripts/set-registry-credentials.sh."
+  type        = bool
+  default     = true
+}
+
+variable "ecr_repository_arns" {
+  description = "Optional ECR mirror: repositories the tasks may pull from (alternative to GHCR; see docs/RUNBOOK.md)."
+  type        = list(string)
+  default     = []
 }
 
 variable "github_oidc_provider_arn" {
@@ -125,13 +145,15 @@ variable "github_oidc_provider_arn" {
 }
 
 variable "github_repository" {
-  description = "owner/repo allowed to deploy releases."
+  description = "owner/repo allowed to deploy releases (the deployment repo)."
   type        = string
+  default     = "rgrishabh/hrms-deployment"
 }
 
 variable "github_deploy_environment" {
-  description = "GitHub environment whose jobs may assume the release role (e.g. production, staging)."
+  description = "GitHub environment whose jobs may assume the release role. Default: prod-<customer_slug>."
   type        = string
+  default     = null
 }
 
 # ---- sizing (start small; resize from load tests)
@@ -203,6 +225,32 @@ variable "api_min_count" {
 variable "api_max_count" {
   type    = number
   default = 6
+}
+
+variable "web_cpu" {
+  type    = number
+  default = 256
+}
+
+variable "web_memory" {
+  type    = number
+  default = 512
+}
+
+variable "web_min_count" {
+  type    = number
+  default = 2
+}
+
+variable "web_max_count" {
+  type    = number
+  default = 4
+}
+
+variable "api_requests_per_target" {
+  description = "Target ALB requests per API task per minute for request-count autoscaling."
+  type        = number
+  default     = 1000
 }
 
 variable "db_pool_max" {

@@ -74,16 +74,15 @@ mock_provider "aws" {
 mock_provider "random" {}
 
 variables {
-  customer_slug             = "customer-a"
-  environment               = "production"
-  domains                   = ["hrms.customer-a.example.com", "hr.customer-a.example.com"]
-  enabled_modules           = ["default", "attendance.biometric"]
-  admin_email               = "it@customer-a.example.com"
-  container_image           = "222222222222.dkr.ecr.ap-south-1.amazonaws.com/hrms-api:abc123"
-  ecr_repository_arn        = "arn:aws:ecr:ap-south-1:222222222222:repository/hrms-api"
-  github_oidc_provider_arn  = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
-  github_repository         = "example/hrms"
-  github_deploy_environment = "production"
+  customer_slug            = "customer-a"
+  environment              = "production"
+  domains                  = ["hrms.customer-a.example.com", "hr.customer-a.example.com"]
+  enabled_modules          = ["default", "attendance.biometric"]
+  admin_email              = "it@customer-a.example.com"
+  backend_image            = "ghcr.io/example/hrms-backend:v1.2.3"
+  frontend_image           = "ghcr.io/example/hrms-frontend:v1.2.3"
+  github_oidc_provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+  github_repository        = "example/hrms-deployment"
   organization = {
     name        = "Customer A Testing Laboratories"
     legal_name  = "Customer A Testing Laboratories Private Limited"
@@ -150,7 +149,7 @@ run "app_container_gets_same_configuration_as_compose" {
   }
 
   assert {
-    condition     = toset(flatten([for c in aws_lb_listener_rule.api.condition : [for h in c.host_header : h.values]])) == toset(["hrms.customer-a.example.com", "hr.customer-a.example.com"])
+    condition     = toset(flatten([for c in aws_lb_listener_rule.api["api"].condition : [for h in c.host_header : h.values]])) == toset(["hrms.customer-a.example.com", "hr.customer-a.example.com"])
     error_message = "ALB must forward only the configured domains."
   }
 }
@@ -205,4 +204,61 @@ run "rejects_incomplete_smtp" {
     mail = { transport = "smtp" }
   }
   expect_failures = [var.mail]
+}
+
+run "frontend_is_a_separate_service_on_the_same_origin" {
+  command = apply
+  assert {
+    condition     = toset(flatten([for c in aws_lb_listener_rule.api["api"].condition : [for p in c.path_pattern : p.values]])) == toset(["/api/*", "/branding/*"])
+    error_message = "API and branding paths must go to the backend"
+  }
+  assert {
+    condition     = toset(flatten([for c in aws_lb_listener_rule.api["health"].condition : [for p in c.path_pattern : p.values]])) == toset(["/health*", "/ready"])
+    error_message = "Health and readiness must go to the backend"
+  }
+  assert {
+    condition     = aws_lb_listener_rule.web.priority > aws_lb_listener_rule.api["api"].priority && aws_lb_listener_rule.web.priority > aws_lb_listener_rule.api["health"].priority
+    error_message = "Frontend catch-all must be evaluated after the backend path rules"
+  }
+  assert {
+    condition     = toset(flatten([for c in aws_lb_listener_rule.web.condition : [for h in c.host_header : h.values]])) == toset(["hrms.customer-a.example.com", "hr.customer-a.example.com"])
+    error_message = "Frontend rule must be limited to the installation's hosts"
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.web.container_definitions)[0].image == "ghcr.io/example/hrms-frontend:v1.2.3" && jsondecode(aws_ecs_task_definition.web.container_definitions)[0].readonlyRootFilesystem
+    error_message = "Frontend task must run the frontend image with a read-only root filesystem"
+  }
+  assert {
+    condition     = aws_ecs_service.web.deployment_circuit_breaker[0].rollback && aws_ecs_service.api.deployment_circuit_breaker[0].rollback
+    error_message = "Both services must roll back automatically on a failed deployment"
+  }
+}
+
+run "pulls_from_ghcr_with_registry_credentials" {
+  command = apply
+  assert {
+    condition = alltrue([for td in [aws_ecs_task_definition.api, aws_ecs_task_definition.ops, aws_ecs_task_definition.web] :
+    jsondecode(td.container_definitions)[0].repositoryCredentials.credentialsParameter == aws_secretsmanager_secret.registry[0].arn])
+    error_message = "Every task must pull with the registry credentials secret"
+  }
+  assert {
+    condition     = contains(flatten([for c in data.aws_iam_policy_document.release_assume.statement[0].condition : c.values]), "repo:example/hrms-deployment:environment:prod-customer-a")
+    error_message = "Only the prod-<slug> environment of the deployment repo may assume the release role"
+  }
+}
+
+run "rejects_latest_tag" {
+  command = plan
+  variables {
+    backend_image = "ghcr.io/example/hrms-backend:latest"
+  }
+  expect_failures = [var.backend_image]
+}
+
+run "rejects_too_many_domains_for_alb_rules" {
+  command = plan
+  variables {
+    domains = ["a.example.com", "b.example.com", "c.example.com", "d.example.com"]
+  }
+  expect_failures = [var.domains]
 }

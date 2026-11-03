@@ -1,8 +1,8 @@
 # Root configuration for ONE customer account. The same root is used for every
 # customer; only the files under infra/customers/ differ:
 #
-#   terraform -chdir=infra/live/customer init -reconfigure -backend-config=../../customers/<name>.backend.hcl
-#   terraform -chdir=infra/live/customer plan  -var-file=../../customers/<name>.tfvars
+#   terraform -chdir=terraform/envs/customer init -reconfigure -backend-config=../../customers/<name>.backend.hcl
+#   terraform -chdir=terraform/envs/customer plan  -var-file=../../customers/<name>.tfvars
 terraform {
   required_version = ">= 1.10"
   required_providers {
@@ -56,11 +56,13 @@ module "hrms" {
   admin_email     = var.admin_email
   admin_name      = var.admin_name
 
-  container_image           = var.container_image
-  ecr_repository_arn        = var.ecr_repository_arn
+  backend_image             = var.backend_image
+  frontend_image            = var.frontend_image
+  private_registry          = var.private_registry
+  ecr_repository_arns       = var.ecr_repository_arns
   github_oidc_provider_arn  = module.baseline.github_oidc_provider_arn
   github_repository         = var.github_repository
-  github_deploy_environment = var.github_deploy_environment
+  github_deploy_environment = "prod-${var.customer_slug}"
 
   db_instance_class  = var.db_instance_class
   db_multi_az        = var.db_multi_az
@@ -84,6 +86,10 @@ output "alb_dns_name" {
 
 output "acm_validation_records" {
   value = module.hrms.acm_validation_records
+}
+
+output "registry_credentials_secret_arn" {
+  value = module.hrms.registry_credentials_secret_arn
 }
 
 output "release_role_arn" {

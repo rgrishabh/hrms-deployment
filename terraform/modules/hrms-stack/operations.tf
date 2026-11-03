@@ -57,6 +57,10 @@ locals {
       namespace = "AWS/ApplicationELB", metric = "UnHealthyHostCount", stat = "Maximum", threshold = 0, op = "GreaterThanThreshold", periods = 3,
       dims      = merge(local.alb_dim, { TargetGroup = aws_lb_target_group.api.arn_suffix }), desc = "API tasks failing health checks"
     }
+    unhealthy-web-targets = {
+      namespace = "AWS/ApplicationELB", metric = "UnHealthyHostCount", stat = "Maximum", threshold = 0, op = "GreaterThanThreshold", periods = 3,
+      dims      = merge(local.alb_dim, { TargetGroup = aws_lb_target_group.web.arn_suffix }), desc = "Frontend tasks failing health checks"
+    }
     latency-p95 = {
       namespace = "AWS/ApplicationELB", metric = "TargetResponseTime", stat = "p95", threshold = 1.5, op = "GreaterThanThreshold", periods = 3,
       dims      = local.alb_dim, desc = "p95 response time above 1.5 s"

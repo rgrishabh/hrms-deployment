@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "this" {
 }
 
 resource "aws_cloudwatch_log_group" "app" {
-  for_each          = toset(["api", "ops"])
+  for_each          = toset(["api", "ops", "web"])
   name              = "/hrms/${each.key}"
   retention_in_days = var.log_retention_days
   kms_key_id        = aws_kms_key.main.arn
@@ -48,15 +48,19 @@ resource "aws_iam_role_policy" "execution" {
   role = aws_iam_role.execution.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = concat([for s in aws_secretsmanager_secret.app : s.arn], [aws_db_instance.this.master_user_secret[0].secret_arn, aws_secretsmanager_secret.smtp_password.arn])
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = concat([for s in aws_secretsmanager_secret.app : s.arn], [aws_db_instance.this.master_user_secret[0].secret_arn, aws_secretsmanager_secret.smtp_password.arn],
+        [for s in aws_secretsmanager_secret.registry : s.arn])
       },
       { Effect = "Allow", Action = ["kms:Decrypt"], Resource = [aws_kms_key.main.arn] },
-      { Effect = "Allow", Action = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"], Resource = [var.ecr_repository_arn] },
-    ]
+      ],
+      # Optional ECR mirror (alternative to GHCR): one statement each, only when repositories are given.
+      [for _ in slice(["ecr"], 0, length(var.ecr_repository_arns) > 0 ? 1 : 0) : { Effect = "Allow", Action = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"], Resource = var.ecr_repository_arns }],
+      [for _ in slice(["ecr"], 0, length(var.ecr_repository_arns) > 0 ? 1 : 0) : { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*" }],
+    )
   })
 }
 
@@ -91,7 +95,7 @@ resource "aws_iam_role" "ops_task" {
 locals {
   secret = { for k, s in aws_secretsmanager_secret.app : k => s.arn }
   master = aws_db_instance.this.master_user_secret[0].secret_arn
-  log = { for k in ["api", "ops"] : k => {
+  log = { for k in ["api", "ops", "web"] : k => {
     logDriver = "awslogs"
     options = {
       "awslogs-group"         = aws_cloudwatch_log_group.app[k].name
@@ -139,17 +143,29 @@ locals {
     MAIL_FROM_ADDRESS = var.mail.from_address
     MAIL_FROM_NAME    = var.mail.from_name
   }
-  mail_env_list     = [for k, v in local.mail_env : { name = k, value = v } if v != null && v != ""]
-  smtp_secret       = var.mail.transport == "smtp" && var.mail.smtp_user != null ? [{ name = "SMTP_PASSWORD", valueFrom = aws_secretsmanager_secret.smtp_password.arn }] : []
-  identity_env_list = [for k, v in local.identity_env : { name = k, value = v } if v != null && v != ""]
-  branding_env_list = [for k, v in local.branding_env : { name = k, value = v } if v != null && v != ""]
-  container_base = {
+  mail_env_list        = [for k, v in local.mail_env : { name = k, value = v } if v != null && v != ""]
+  smtp_secret          = var.mail.transport == "smtp" && var.mail.smtp_user != null ? [{ name = "SMTP_PASSWORD", valueFrom = aws_secretsmanager_secret.smtp_password.arn }] : []
+  identity_env_list    = [for k, v in local.identity_env : { name = k, value = v } if v != null && v != ""]
+  branding_env_list    = [for k, v in local.branding_env : { name = k, value = v } if v != null && v != ""]
+  registry_credentials = var.private_registry ? { repositoryCredentials = { credentialsParameter = aws_secretsmanager_secret.registry[0].arn } } : {}
+  tmp_mount            = [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }]
+  container_base = merge({
     name                   = "app"
-    image                  = var.container_image
+    image                  = var.backend_image
     essential              = true
     readonlyRootFilesystem = true
-    user                   = "node"
+    user                   = "1000:1000"
     linuxParameters        = { initProcessEnabled = true }
+    mountPoints            = local.tmp_mount
+  }, local.registry_credentials)
+  web_env = {
+    APP_ENVIRONMENT     = var.environment
+    PRODUCT_NAME        = var.branding.product_name
+    BRAND_SHORT_NAME    = var.branding.short_name
+    BRAND_PRIMARY_COLOR = var.branding.primary_color
+    BRAND_FAVICON_URL   = var.branding.favicon_url
+    BRAND_LOGO_URL      = var.branding.logo_url
+    HSTS                = "true"
   }
 }
 
@@ -164,6 +180,9 @@ resource "aws_ecs_task_definition" "api" {
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
+  }
+  volume {
+    name = "tmp"
   }
   container_definitions = jsonencode([merge(local.container_base, {
     portMappings     = [{ containerPort = 4000, protocol = "tcp" }]
@@ -181,7 +200,7 @@ resource "aws_ecs_task_definition" "api" {
       { name = "DATA_ENCRYPTION_KEY", valueFrom = local.secret.data_encryption_key },
     ], local.smtp_secret)
     healthCheck = {
-      command     = ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health/live || exit 1"]
+      command     = ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:4000/health"]
       interval    = 30
       timeout     = 5
       retries     = 3
@@ -204,8 +223,11 @@ resource "aws_ecs_task_definition" "ops" {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
   }
+  volume {
+    name = "tmp"
+  }
   container_definitions = jsonencode([merge(local.container_base, {
-    command          = ["node", "dist/src/db/migrate.js"]
+    command          = ["migrate"]
     logConfiguration = local.log.ops
     environment = concat(local.common_env, local.identity_env_list, [
       { name = "DATABASE_SSL", value = "verify-full" },
@@ -235,8 +257,11 @@ resource "aws_ecs_task_definition" "dbadmin" {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
   }
+  volume {
+    name = "tmp"
+  }
   container_definitions = jsonencode([merge(local.container_base, {
-    command          = ["node", "dist/src/db/provision.js"]
+    command          = ["provision"]
     logConfiguration = local.log.ops
     environment = concat(local.common_env, [
       { name = "DATABASE_SSL", value = "verify-full" },
@@ -254,7 +279,42 @@ resource "aws_ecs_task_definition" "dbadmin" {
   tags = local.tags
 }
 
-# ------------------------------------------------------------------ service
+resource "aws_ecs_task_definition" "web" {
+  family                   = "hrms-web"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.web_cpu
+  memory                   = var.web_memory
+  execution_role_arn       = aws_iam_role.execution.arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+  volume {
+    name = "tmp"
+  }
+  container_definitions = jsonencode([merge({
+    name                   = "web"
+    image                  = var.frontend_image
+    essential              = true
+    readonlyRootFilesystem = true
+    user                   = "101:101"
+    mountPoints            = local.tmp_mount
+    portMappings           = [{ containerPort = 8080, protocol = "tcp" }]
+    logConfiguration       = local.log.web
+    environment            = [for k, v in local.web_env : { name = k, value = v } if v != null && v != ""]
+    healthCheck = {
+      command     = ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 10
+    }
+  }, local.registry_credentials)])
+  tags = local.tags
+}
+
+# ------------------------------------------------------------------ services
 resource "aws_ecs_service" "api" {
   name                              = "hrms-api"
   cluster                           = aws_ecs_cluster.this.id
@@ -292,6 +352,63 @@ resource "aws_ecs_service" "api" {
   tags       = local.tags
 }
 
+resource "aws_ecs_service" "web" {
+  name                              = "hrms-web"
+  cluster                           = aws_ecs_cluster.this.id
+  task_definition                   = aws_ecs_task_definition.web.arn
+  desired_count                     = var.web_min_count
+  launch_type                       = "FARGATE"
+  platform_version                  = "LATEST"
+  health_check_grace_period_seconds = 15
+  enable_execute_command            = false
+  propagate_tags                    = "SERVICE"
+  network_configuration {
+    subnets          = aws_subnet.app[*].id
+    security_groups  = [aws_security_group.web.id]
+    assign_public_ip = false
+  }
+  load_balancer {
+    target_group_arn = aws_lb_target_group.web.arn
+    container_name   = "web"
+    container_port   = 8080
+  }
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  lifecycle {
+    ignore_changes = [task_definition, desired_count]
+  }
+  depends_on = [aws_lb_listener_rule.web]
+  tags       = local.tags
+}
+
+resource "aws_appautoscaling_target" "web" {
+  service_namespace  = "ecs"
+  resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.web.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  min_capacity       = var.web_min_count
+  max_capacity       = var.web_max_count
+}
+
+resource "aws_appautoscaling_policy" "web_cpu" {
+  name               = "cpu-target"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.web.service_namespace
+  resource_id        = aws_appautoscaling_target.web.resource_id
+  scalable_dimension = aws_appautoscaling_target.web.scalable_dimension
+  target_tracking_scaling_policy_configuration {
+    target_value       = 60
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+  }
+}
+
 resource "aws_appautoscaling_target" "api" {
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.api.name}"
@@ -316,12 +433,41 @@ resource "aws_appautoscaling_policy" "api_cpu" {
   }
 }
 
+resource "aws_appautoscaling_policy" "api_requests" {
+  name               = "requests-target"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.api.service_namespace
+  resource_id        = aws_appautoscaling_target.api.resource_id
+  scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.api_requests_per_target
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${aws_lb.this.arn_suffix}/${aws_lb_target_group.api.arn_suffix}"
+    }
+  }
+}
+
+# ------------------------------------------------------------------ registry credentials (GHCR)
+# Value set once, out of band (scripts/set-registry-credentials.sh): {"username":"...","password":"<read:packages token>"}.
+resource "aws_secretsmanager_secret" "registry" {
+  count                   = var.private_registry ? 1 : 0
+  name                    = "hrms/registry-credentials"
+  description             = "Container registry pull credentials for ECS (GHCR read:packages token)."
+  kms_key_id              = aws_kms_key.main.arn
+  recovery_window_in_days = 7
+  tags                    = local.tags
+}
+
 # ------------------------------------------------------------------ release metadata
 # Read by scripts/deploy/release.sh so the pipeline needs no Terraform state access.
 resource "aws_ssm_parameter" "release" {
   for_each = {
     cluster        = aws_ecs_cluster.this.name
     service        = aws_ecs_service.api.name
+    web_service    = aws_ecs_service.web.name
     subnets        = join(",", aws_subnet.app[*].id)
     ops_sg         = aws_security_group.ops.id
     domain         = local.primary
@@ -353,7 +499,7 @@ data "aws_iam_policy_document" "release_assume" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${var.github_deploy_environment}"]
+      values   = ["repo:${var.github_repository}:environment:${local.deploy_env}"]
     }
   }
 }
@@ -377,7 +523,8 @@ resource "aws_iam_role_policy" "release" {
         Effect    = "Allow", Action = ["ecs:RunTask"], Resource = "arn:${local.partition}:ecs:${local.region}:${local.account_id}:task-definition/hrms-*"
         Condition = { ArnEquals = { "ecs:cluster" = aws_ecs_cluster.this.arn } }
       },
-      { Effect = "Allow", Action = ["ecs:UpdateService"], Resource = aws_ecs_service.api.id },
+      { Effect = "Allow", Action = ["ecs:UpdateService"], Resource = [aws_ecs_service.api.id, aws_ecs_service.web.id] },
+      { Effect = "Allow", Action = ["sns:Publish"], Resource = aws_sns_topic.alarms.arn },
       {
         Effect    = "Allow", Action = ["iam:PassRole"], Resource = [aws_iam_role.execution.arn, aws_iam_role.api_task.arn, aws_iam_role.ops_task.arn]
         Condition = { StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" } }

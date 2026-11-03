@@ -57,22 +57,32 @@ variable "admin_name" {
   default = "Administrator"
 }
 
-variable "container_image" {
-  description = "Image used when the stack is first created; later releases are deployed by the release pipeline."
+variable "backend_image" {
+  description = "Backend image used when the stack is first created; later releases are deployed by deploy-prod."
   type        = string
 }
 
-variable "ecr_repository_arn" {
-  type = string
+variable "frontend_image" {
+  description = "Frontend image used when the stack is first created."
+  type        = string
+}
+
+variable "private_registry" {
+  description = "true for GHCR (pull credentials from Secrets Manager)."
+  type        = bool
+  default     = true
+}
+
+variable "ecr_repository_arns" {
+  description = "Optional ECR mirror repositories (alternative to GHCR)."
+  type        = list(string)
+  default     = []
 }
 
 variable "github_repository" {
-  type = string
-}
-
-variable "github_deploy_environment" {
-  type    = string
-  default = "production"
+  description = "Deployment repo whose environments infra-<slug> / prod-<slug> may assume this account's roles."
+  type        = string
+  default     = "rgrishabh/hrms-deployment"
 }
 
 variable "enable_guardduty" {
