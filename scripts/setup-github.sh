@@ -52,6 +52,10 @@ for r in hrms-backend hrms-frontend hrms-deployment; do
   # Workflows get a read-only GITHUB_TOKEN by default; release-please/create-pull-request may open PRs.
   api -X PUT "repos/$OWNER/$r/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true >/dev/null
   api -X PUT "repos/$OWNER/$r/vulnerability-alerts" >/dev/null 2>&1 || true
+  # Public repos: workflows from fork PRs of any outside contributor wait for approval (secrets are never given to forks).
+  api -X PUT "repos/$OWNER/$r/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors >/dev/null 2>&1 \
+    || warn "$r: could not require approval for fork PR workflows (Settings → Actions → General)"
+  api -X PUT "repos/$OWNER/$r/private-vulnerability-reporting" >/dev/null 2>&1 || true
 done
 # The app repos call reusable workflows in hrms-deployment (private): allow repos of the same owner.
 api -X PUT "repos/$OWNER/hrms-deployment/actions/permissions/access" -f access_level=user >/dev/null \
