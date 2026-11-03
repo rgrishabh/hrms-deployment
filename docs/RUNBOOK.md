@@ -42,6 +42,20 @@ aws ecs describe-services --cluster hrms --services hrms-api hrms-web --query 's
 CloudWatch alarms (5xx, p95 latency, unhealthy API/web targets, task count, RDS CPU/storage/connections, WAF) notify the
 account's SNS topic. Failed deploys also publish there.
 
+## Load demo data on dev
+
+For testing and demos only. Actions → **Load dev demo data** → Run workflow, type `load-demo-data`.
+It runs `environments/dev/bin/demo-data` on the host, which fills an **empty, bootstrapped**
+installation with a synthetic 60-person testing laboratory (attendance, leave, training and
+authorizations, policies, recruitment, salaries, assets, reviews) and 10 persona logins.
+
+- Refused unless `APP_ENVIRONMENT` is `dev`/`demo`; the backend also refuses if any real
+  (non-`DM-…`) employee exists, and is a no-op when demo data is already there.
+- No statutory payroll rules are created.
+- Logins + password: `ssh ubuntu@<dev host> 'cat /opt/hrms/dev/demo-credentials.txt'` (mode 600,
+  never in the Actions log). Privileged personas enrol two-factor authentication at first sign-in.
+- To start again: restore the post-bootstrap backup, or drop the `db-data` volume and re-bootstrap.
+
 ## Rotate secrets
 
 | Secret | Where | Rotate |
