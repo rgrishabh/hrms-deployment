@@ -49,7 +49,7 @@ infra/
 2. **Config:** copy `customers/_template.tfvars` → `customers/<slug>.tfvars` and `_template.backend.hcl` → `<slug>.backend.hcl`. Fill in account id, slug, domains, `organization`, `branding`, `enabled_modules`, admin email and sizing (same meaning as the Compose `.env`; see DEPLOYMENT.md §3). Add the customer to `customers/customers.json` with `"canary": false`. Open a PR and merge it.
 3. **First apply** by an administrator via SSO, because the pipeline's role doesn't exist yet in the new account:
    ```bash
-   cd infra/live/customer
+   cd terraform/envs/customer
    terraform init -reconfigure -backend-config=../../customers/<slug>.backend.hcl
    terraform apply -var-file=../../customers/<slug>.tfvars
    ```

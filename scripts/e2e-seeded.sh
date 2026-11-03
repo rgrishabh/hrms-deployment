@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against ONE running installation with the synthetic dev seed
 # (npm run seed). Exercises runtime config, auth, CSRF, permissions and attendance.
-# Usage: scripts/smoke.sh [base_url] [host_header]
+# Usage: scripts/e2e-seeded.sh [base_url] [host_header]
 #   default: http://127.0.0.1:5173 (Vite dev proxy) with Host localhost:5173
 set -euo pipefail
 BASE=${1:-http://127.0.0.1:5173}

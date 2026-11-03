@@ -1,5 +1,0 @@
-{
-  "_comment": "Release targets, in rollout order. 'canary' customers deploy first (after staging); then the rest. Account ids and domains must match each <slug>.tfvars.",
-  "staging": { "slug": "staging", "account_id": "<12-digit-staging-account-id>", "region": "ap-south-1", "domain": "hrms-staging.<your-domain>" },
-  "customers": []
-}
