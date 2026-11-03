@@ -30,8 +30,8 @@ release's code. Removals ship one release later. This is what makes rollbacks sa
 
 ```bash
 # dev
-ssh ubuntu@3.104.1.47 'cd /opt/hrms/dev && bin/dc logs -f --tail 200 backend'      # or frontend, caddy, db, backup
-ssh ubuntu@3.104.1.47 'cd /opt/hrms/dev && bin/dc ps'
+ssh ubuntu@3.107.226.191 'cd /opt/hrms/dev && bin/dc logs -f --tail 200 backend'      # or frontend, caddy, db, backup
+ssh ubuntu@3.107.226.191 'cd /opt/hrms/dev && bin/dc ps'
 # prod (customer account credentials)
 aws logs tail /hrms/api --follow --since 30m      # backend (JSON)
 aws logs tail /hrms/web --follow                  # frontend nginx
@@ -61,7 +61,7 @@ account's SNS topic. Failed deploys also publish there.
 **Dev (nightly sets in the `backups` volume, optionally copied to S3):**
 
 ```bash
-ssh ubuntu@3.104.1.47
+ssh ubuntu@3.107.226.191
 cd /opt/hrms/dev
 bin/dc exec backup ls /backups                         # hrms-YYYYMMDD-HHMMSS
 bin/dc cp backup:/backups/hrms-20261103-023000 /tmp/restore-set
