@@ -13,12 +13,18 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
-c() { curl -sS --max-time 15 ${RESOLVE[@]+"${RESOLVE[@]}"} "$@"; }
+# Never abort on a failed request: every check reports its own result.
+c() { curl -sS --max-time 15 ${RESOLVE[@]+"${RESOLVE[@]}"} "$@" || true; }
 pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1 (expected '$3', got '$2')"; fail=$((fail+1)); fi; }
 has() { if grep -qiE "$2" <<<"$3"; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1 (missing /$2/)"; fail=$((fail+1)); fi; }
 
 echo "Smoke test: $BASE"
+# A fresh installation may still be obtaining its TLS certificate: wait for readiness first (WAIT_SECONDS, default 180).
+for _ in $(seq 1 $(( ${WAIT_SECONDS:-180} / 5 ))); do
+  [ "$(c -o /dev/null -w '%{http_code}' "$BASE/ready")" = 200 ] && break
+  sleep 5
+done
 check "liveness /health" "$(c -o /dev/null -w '%{http_code}' "$BASE/health")" 200
 check "readiness /ready" "$(c -o /dev/null -w '%{http_code}' "$BASE/ready")" 200
 INDEX=$(c -D - "$BASE/")

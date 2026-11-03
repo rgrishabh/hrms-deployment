@@ -176,7 +176,9 @@ jobs:
         run: |
           # shellcheck disable=SC2029
           echo "::warning::Deployment failed; restoring the previous versions"
-          if [ "${{ vars.DEV_DEPLOY_METHOD }}" = "ssm" ]; then ROLLBACK=1 scripts/lib/ssm-deploy-dev.sh "$RUNNER_TEMP/versions.prev.env" || true
+          if grep -qE '^(BACKEND|FRONTEND)_TAG=unset$' "$RUNNER_TEMP/versions.prev.env"; then
+            echo "::error::first deployment failed and there is no previous version to restore; the new version is left running for diagnosis"
+          elif [ "${{ vars.DEV_DEPLOY_METHOD }}" = "ssm" ]; then ROLLBACK=1 scripts/lib/ssm-deploy-dev.sh "$RUNNER_TEMP/versions.prev.env" || true
           else ssh dev "$DEPLOY_DIR/deploy-dev.sh --rollback" || echo "::error::rollback deploy failed too; check the host"; fi
           if [ -n "${BUMP_SHA:-}" ]; then
             git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
