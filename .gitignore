@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store
+/storage/
+apps/api/storage/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+infra/modules/**/.terraform.lock.hcl
+deploy/compose/backups/
+*.dump
+*.dump.sha256
