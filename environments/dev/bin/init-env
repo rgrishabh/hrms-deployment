@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fill empty secrets in .env with strong random values and lock the file down.
 # Never overwrites a secret that is already set (rotation is a separate, deliberate step:
-# see DEPLOYMENT.md "Rotate credentials").
+# see docs/RUNBOOK.md "Rotate secrets").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f .env ] || { echo "No .env here. Run: cp .env.example .env" >&2; exit 1; }

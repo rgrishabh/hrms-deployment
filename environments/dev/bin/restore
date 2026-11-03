@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# Restore a backup INTO THIS installation, replacing its current data.
-# Usage: bin/restore <dump-file> --confirm <COMPOSE_PROJECT_NAME>
-# Stops the app, recreates the database, restores, then starts the stack (migrations run).
+# Restore a backup set INTO THIS installation, replacing its current data.
+# Usage: bin/restore <backup-dir> --confirm <COMPOSE_PROJECT_NAME>
+#   <backup-dir> = a local copy of backups/hrms-<ts>/ (db.dump, documents.tar.gz, SHA256SUMS)
+# Stops the backend, recreates the database, restores database + documents, then starts the stack.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-FILE=${1:?usage: bin/restore <dump-file> --confirm <project-name>}
+DIR=${1:?usage: bin/restore <backup-dir> --confirm <project-name>}
 [ "${2:-}" = "--confirm" ] || { echo "refusing: add --confirm <project-name>" >&2; exit 1; }
-PROJECT=$(docker compose config --format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["name"])')
+PROJECT=$(bin/dc config --format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["name"])')
 [ "${3:-}" = "$PROJECT" ] || { echo "refusing: --confirm must be followed by this project's name ($PROJECT)" >&2; exit 1; }
-if [ -f "$FILE.sha256" ]; then ( cd "$(dirname "$FILE")" && (sha256sum -c "$(basename "$FILE").sha256" 2>/dev/null || shasum -a 256 -c "$(basename "$FILE").sha256") ); else echo "warning: no checksum file next to $FILE" >&2; fi
-echo "stopping app"; docker compose stop app
-docker compose exec -T db psql -U postgres -v ON_ERROR_STOP=1 -d postgres \
+DIR=$(cd "$DIR" && pwd)
+[ -f "$DIR/db.dump" ] || { echo "no db.dump in $DIR" >&2; exit 1; }
+( cd "$DIR" && sha256sum -c SHA256SUMS )
+
+echo "stopping backend"; bin/dc stop backend frontend
+bin/dc exec -T db psql -U postgres -v ON_ERROR_STOP=1 -d postgres \
   -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='hrms' AND pid <> pg_backend_pid()" \
   -c "DROP DATABASE IF EXISTS hrms" -c "CREATE DATABASE hrms OWNER hrms_owner"
-docker compose exec -T db pg_restore -U postgres --no-owner --role=hrms_owner --exit-on-error -d hrms < "$FILE"
-DOCS="${FILE%.dump}.documents.tar.gz"
-if [ -f "$DOCS" ]; then
-  echo "restoring documents from $DOCS"
-  docker compose run --rm --no-deps --entrypoint sh -v "$(cd "$(dirname "$DOCS")" && pwd)/$(basename "$DOCS"):/restore.tar.gz:ro" -u 0 app \
-    -c 'find /app/storage -mindepth 1 -delete && tar -C /app/storage -xzf /restore.tar.gz && chown -R node:node /app/storage'
-else echo "warning: no documents archive next to the dump; documents not restored" >&2; fi
+bin/dc exec -T db pg_restore -U postgres --no-owner --role=hrms_owner --exit-on-error -d hrms < "$DIR/db.dump"
+
+if [ -f "$DIR/documents.tar.gz" ]; then
+  echo "restoring documents"
+  IMAGE=$(bin/dc config --images backend | head -1)
+  docker run --rm -u 0 -v "${PROJECT}_app-storage:/app/storage" -v "$DIR/documents.tar.gz:/restore.tar.gz:ro" --entrypoint sh "$IMAGE" \
+    -c 'find /app/storage -mindepth 1 -delete && tar -C /app/storage -xzf /restore.tar.gz && chown -R 1000:1000 /app/storage'
+else echo "warning: no documents.tar.gz; documents not restored" >&2; fi
+
 echo "restored; starting stack (provision + migrate run first)"
-docker compose up -d
+bin/dc up -d --wait

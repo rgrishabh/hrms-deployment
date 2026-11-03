@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# docker compose for this installation: always with .env (config + secrets) and versions.env (image tags).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec docker compose --env-file .env --env-file versions.env "$@"

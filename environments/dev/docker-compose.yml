@@ -1,16 +1,16 @@
-# One customer installation = one copy of this directory with its own .env and branding/.
-# Every customer gets its own Compose project (COMPOSE_PROJECT_NAME), so its own
-# containers, networks and volumes (database data). Nothing is shared between customers.
+# HRMS installation on one host (dev EC2; also the template for a self-hosted customer).
+# Images and tags come from versions.env (bot-managed); configuration and secrets from .env
+# (written from the DEV_ENV_FILE secret by the deploy workflow, mode 600; never committed).
 #
-#   bin/init-env              # once: create .env with strong generated secrets
-#   docker compose up -d      # provision -> migrate -> app (in that order, automatically)
-#   docker compose --profile tools run --rm bootstrap   # once: first administrator setup link
+#   docker compose --env-file .env --env-file versions.env up -d    # db -> provision -> migrate -> backend, frontend, caddy
+#   docker compose --env-file .env --env-file versions.env --profile tools run --rm bootstrap
 #
-# See DEPLOYMENT.md (Docker Compose section) for the full procedure.
+# scripts/deploy-dev.sh does all of this (plus health checks and rollback) on every deploy.
 
-name: ${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME in .env (e.g. hrms-customer-a)}
+name: ${COMPOSE_PROJECT_NAME:-hrms-dev}
 
-x-image: &image ${HRMS_IMAGE:?Set HRMS_IMAGE in .env (e.g. registry.example.com/labhrms:1.4.0)}
+x-backend-image: &backend-image ${IMAGE_REGISTRY:-ghcr.io/rgrishabh}/hrms-backend:${BACKEND_TAG:?BACKEND_TAG missing (versions.env)}
+x-frontend-image: &frontend-image ${IMAGE_REGISTRY:-ghcr.io/rgrishabh}/hrms-frontend:${FRONTEND_TAG:?FRONTEND_TAG missing (versions.env)}
 
 x-hardening: &hardening
   read_only: true
@@ -18,17 +18,31 @@ x-hardening: &hardening
   cap_drop: ["ALL"]
   security_opt: ["no-new-privileges:true"]
 
-# Installation identity: shared by the app and the bootstrap job so both see the same domains/name.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+# Installation identity: shared by the backend and the bootstrap job so both see the same domains/name.
 x-identity: &identity
-  APP_URL: ${APP_URL:?Set APP_URL in .env (https://hrms.customer.example)}
+  APP_URL: ${APP_URL:?Set APP_URL in .env (https://dev.example.com)}
   APP_EXTRA_DOMAINS: ${APP_EXTRA_DOMAINS:-}
   ORGANIZATION_NAME: ${ORGANIZATION_NAME:?Set ORGANIZATION_NAME in .env}
   ORGANIZATION_TIMEZONE: ${ORGANIZATION_TIMEZONE:-Asia/Kolkata}
+
+x-branding: &branding
+  PRODUCT_NAME: ${PRODUCT_NAME:-}
+  BRAND_NAME: ${BRAND_NAME:-}
+  BRAND_SHORT_NAME: ${BRAND_SHORT_NAME:-}
+  BRAND_LOGO_URL: ${BRAND_LOGO_URL:-}
+  BRAND_FAVICON_URL: ${BRAND_FAVICON_URL:-}
+  BRAND_PRIMARY_COLOR: ${BRAND_PRIMARY_COLOR:-}
 
 services:
   db:
     image: ${POSTGRES_IMAGE:-postgres:17-alpine}
     restart: unless-stopped
+    <<: *logging
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Run bin/init-env to generate secrets}
@@ -44,11 +58,11 @@ services:
       retries: 20
     shm_size: 256mb
 
-  # Creates/rotates the hrms_owner and hrms_app roles and the database (idempotent). Runs on every `up`.
+  # Creates/rotates the hrms_owner and hrms_app roles and the database (idempotent).
   provision:
-    image: *image
-    <<: *hardening
-    command: ["node", "dist/src/db/provision.js"]
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["provision"]
     environment:
       DB_HOST: db
       DB_NAME: hrms
@@ -62,11 +76,13 @@ services:
     networks: [internal]
     restart: "no"
 
-  # Applies pending migrations (forward-only, checksummed, serialized). Runs on every `up`.
+  # Applies pending migrations (forward-only, checksummed, serialized). Owner credentials live
+  # only in this one-off container, never in the long-running backend.
+  #   docker compose run --rm --no-deps migrate
   migrate:
-    image: *image
-    <<: *hardening
-    command: ["node", "dist/src/db/migrate.js"]
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["migrate"]
     environment:
       DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD}@db:5432/hrms
       DATABASE_SSL: disable
@@ -75,14 +91,16 @@ services:
     networks: [internal]
     restart: "no"
 
-  app:
-    image: *image
-    <<: *hardening
+  backend:
+    image: *backend-image
+    <<: [*hardening, *logging]
+    init: true
     restart: unless-stopped
+    stop_grace_period: 30s
     depends_on:
       migrate: { condition: service_completed_successfully }
     environment:
-      <<: *identity
+      <<: [*identity, *branding]
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: "4000"
@@ -91,7 +109,7 @@ services:
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
       DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Run bin/init-env to generate secrets}
       COOKIE_SECURE: "true"
-      TRUST_PROXY: ${TRUST_PROXY:-true}
+      TRUST_PROXY: "true"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       ENABLED_MODULES: ${ENABLED_MODULES:-default}
@@ -108,14 +126,7 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-}
-      WEB_DIST_DIR: /app/web
       BRANDING_DIR: /app/branding
-      PRODUCT_NAME: ${PRODUCT_NAME:-}
-      BRAND_NAME: ${BRAND_NAME:-}
-      BRAND_SHORT_NAME: ${BRAND_SHORT_NAME:-}
-      BRAND_LOGO_URL: ${BRAND_LOGO_URL:-}
-      BRAND_FAVICON_URL: ${BRAND_FAVICON_URL:-}
-      BRAND_PRIMARY_COLOR: ${BRAND_PRIMARY_COLOR:-}
       BRAND_SECONDARY_COLOR: ${BRAND_SECONDARY_COLOR:-}
       BRAND_ACCENT_COLOR: ${BRAND_ACCENT_COLOR:-}
       BRAND_LOGIN_MESSAGE: ${BRAND_LOGIN_MESSAGE:-}
@@ -129,48 +140,41 @@ services:
       ORGANIZATION_FY_START_MONTH: ${ORGANIZATION_FY_START_MONTH:-4}
     volumes:
       - ./branding:/app/branding:ro
-      - app-storage:/app/storage   # this installation's documents (back up with bin/backup)
+      - app-storage:/app/storage   # documents; included in the nightly backup
     networks: [internal, edge]
-    # Bound to localhost by default: put the bundled Caddy (profile "https") or your own
-    # reverse proxy in front. Never expose plain HTTP publicly (COOKIE_SECURE requires HTTPS).
-    ports:
-      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:4000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health/ready >/dev/null || exit 1"]
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:4000/health"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
 
-  # One-off: create the organization + first administrator (prints a one-time setup link).
-  #   docker compose --profile tools run --rm bootstrap
-  #   docker compose --profile tools run --rm bootstrap --reset-admin   (recovery)
-  bootstrap:
-    profiles: ["tools"]
-    image: *image
-    <<: *hardening
-    entrypoint: ["node", "dist/src/db/bootstrap.js"]
-    environment:
-      <<: *identity
-      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD}@db:5432/hrms
-      DATABASE_SSL: disable
-      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL in .env}
-      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
-    depends_on:
-      migrate: { condition: service_completed_successfully }
-    networks: [internal]
-    restart: "no"
-
-  # Optional automatic HTTPS (Let's Encrypt) when this VM serves only this customer:
-  #   docker compose --profile https up -d
-  caddy:
-    profiles: ["https"]
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
+  frontend:
+    image: *frontend-image
+    <<: [*hardening, *logging]
     restart: unless-stopped
-    depends_on:
-      app: { condition: service_healthy }
     environment:
-      APP_DOMAINS: ${CADDY_SITE_ADDRESSES:-} # required when using the https profile
+      <<: *branding
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-dev}
+      HSTS: "false" # set once, by Caddy
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Automatic HTTPS (Let's Encrypt) and same-origin routing: /api, /health, /ready, /branding -> backend; rest -> frontend.
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.10-alpine}
+    restart: unless-stopped
+    <<: *logging
+    depends_on:
+      backend: { condition: service_healthy }
+      frontend: { condition: service_healthy }
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS in .env (e.g. dev.example.com)}
       APP_URL: ${APP_URL}
       CADDY_REDIRECT_ADDRESSES: ${CADDY_REDIRECT_ADDRESSES:-}
     ports:
@@ -182,13 +186,70 @@ services:
       - caddy-config:/config
     networks: [edge]
 
+  # Nightly database + documents backup into the backups volume (kept BACKUP_KEEP_DAYS days).
+  backup:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    <<: *logging
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: hrms_owner
+      PGPASSWORD: ${DB_OWNER_PASSWORD}
+      PGDATABASE: hrms
+      TZ: ${ORGANIZATION_TIMEZONE:-Asia/Kolkata}
+      BACKUP_AT: ${BACKUP_AT:-02:30}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+    volumes:
+      - ./bin/backup-loop.sh:/scripts/backup-loop.sh:ro
+      - backups:/backups
+      - app-storage:/storage:ro
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal]
+
+  # Optional off-host copy: COMPOSE_PROFILES=s3backup and BACKUP_S3_URI=s3://bucket/prefix in .env.
+  # Uses the EC2 instance role (IMDSv2 hop limit 2); no AWS keys on disk.
+  backup-s3:
+    profiles: ["s3backup"]
+    image: ${AWS_CLI_IMAGE:-amazon/aws-cli:2.27.50}
+    <<: *logging
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'while true; do aws s3 sync /backups "$$BACKUP_S3_URI" --only-show-errors --sse AES256 && echo "s3 sync ok"; sleep 3600; done'
+    environment:
+      BACKUP_S3_URI: ${BACKUP_S3_URI:-}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+    volumes:
+      - backups:/backups:ro
+    networks: [edge]
+
+  # One-off: create the organization + first administrator (prints a one-time setup link).
+  bootstrap:
+    profiles: ["tools"]
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["bootstrap"]
+    environment:
+      <<: *identity
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD}@db:5432/hrms
+      DATABASE_SSL: disable
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL in .env}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
 networks:
   internal:
-    internal: true # no route outside the host: database and one-off jobs only talk to each other
+    internal: true # no route outside the host: database, backups and one-off jobs
   edge: {}
 
 volumes:
   db-data:
   app-storage:
+  backups:
   caddy-data:
   caddy-config:
