@@ -1,13 +1,8 @@
-node_modules/
-dist/
 .env
 .env.*
 !.env.example
-coverage/
 *.log
 .DS_Store
-/storage/
-apps/api/storage/
 
 # Terraform
 .terraform/
@@ -16,7 +11,10 @@ apps/api/storage/
 *.tfplan
 tfplan
 crash.log
-infra/modules/**/.terraform.lock.hcl
-deploy/compose/backups/
+terraform/modules/**/.terraform.lock.hcl
+
+# Compose installation runtime data
+environments/*/backups/
+environments/*/setup-link.txt
 *.dump
 *.dump.sha256
