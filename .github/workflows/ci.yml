@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: postgres
+      TEST_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test
+      TEST_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test
+      TEST_SINGLE_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test_single
+      TEST_SINGLE_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test_single
+      TEST_SINGLE_B_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test_single_b
+      TEST_SINGLE_B_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test_single_b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Create database roles (runtime role without BYPASSRLS)
+        run: |
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE hrms_owner LOGIN PASSWORD 'ci_owner' NOSUPERUSER NOBYPASSRLS" \
+            -c "CREATE ROLE hrms_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS" \
+            -c "CREATE DATABASE hrms_test OWNER hrms_owner" \
+            -c "CREATE DATABASE hrms_test_single OWNER hrms_owner" \
+            -c "CREATE DATABASE hrms_test_single_b OWNER hrms_owner"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Dependency audit (production deps, high+)
+        run: npm audit --omit=dev --audit-level=high
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the Docker Compose deployment with a sample customer configuration
+        working-directory: deploy/compose
+        run: |
+          cp .env.example .env && bin/init-env
+          sed -i -e 's#hrms-<customer-slug>#hrms-ci#' -e 's#<registry>/labhrms:<version>#hrms:ci#' -e 's#<[^>]*>#placeholder#g' .env
+          sed -i -e 's#^APP_URL=.*#APP_URL=https://hrms.example.com#' -e 's#^BRAND_SUPPORT_EMAIL=.*#BRAND_SUPPORT_EMAIL=hr@example.com#' \
+                 -e 's#^BOOTSTRAP_ADMIN_EMAIL=.*#BOOTSTRAP_ADMIN_EMAIL=it@example.com#' .env
+          docker compose config --quiet
+          docker compose --profile tools --profile https config --quiet
+      - name: Build the image and run the stack end to end
+        run: |
+          docker build -f apps/api/Dockerfile -t hrms:ci .
+          cd deploy/compose
+          docker compose up -d app        # provision -> migrate -> app; not "ready" until bootstrapped
+          docker compose --profile tools run --rm bootstrap | tee bootstrap.out
+          grep -q '"admin":"created"' bootstrap.out
+          grep -q '/setup#token=' bootstrap.out
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health/ready && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/health/ready
+          curl -fsS -H 'Host: hrms.example.com' http://127.0.0.1:8080/api/v1/public/config | grep -q '"organization"'
+          docker compose down -v
