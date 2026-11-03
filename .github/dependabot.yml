@@ -11,4 +11,8 @@ updates:
   - package-ecosystem: docker-compose
     directory: /environments/dev
     schedule: { interval: weekly }
+    ignore:
+      # A PostgreSQL major upgrade needs dump/restore (pg_upgrade) of the data volume: do it deliberately.
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
     commit-message: { prefix: "chore(dev)" }
