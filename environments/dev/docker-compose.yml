@@ -167,7 +167,7 @@ services:
 
   # Automatic HTTPS (Let's Encrypt) and same-origin routing: /api, /health, /ready, /branding -> backend; rest -> frontend.
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2.10-alpine}
+    image: ${CADDY_IMAGE:-caddy:2.11-alpine}
     restart: unless-stopped
     <<: *logging
     depends_on:
