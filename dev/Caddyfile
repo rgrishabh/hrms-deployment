@@ -1,0 +1,41 @@
+# Same-origin routing for one installation; automatic HTTPS when SITE_ADDRESS is a hostname.
+# SITE_ADDRESS is built from BRAND_DOMAIN and BRAND_EXTRA_DOMAINS (caddy service) or is a plain
+# port (gateway service). For a hostname, DNS must point here and 80 + 443 must be reachable.
+#
+# CADDY_GLOBAL_OPTIONS  optional, for example: email ops@example.com
+# CADDY_TLS             optional, for example: tls internal (on-prem without public DNS)
+#                       or: tls /certs/fullchain.pem /certs/privkey.pem
+{
+	{$CADDY_GLOBAL_OPTIONS}
+}
+
+{$SITE_ADDRESS} {
+	{$CADDY_TLS}
+	encode zstd gzip
+
+	# The backend owns the API, health and brand files, and matches the Host header against its
+	# configured domains, so Caddy keeps the original Host. /metrics is not routed: it goes to the
+	# frontend, which never serves it, so it is reachable only inside the Docker network.
+	@backend path /api/* /health /health/* /ready /brand/*
+	handle @backend {
+		reverse_proxy backend:4000
+	}
+	handle {
+		reverse_proxy frontend:8080
+	}
+
+	header {
+		>Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+# Optional: plain-HTTP addresses (for example the server IP) that redirect to the main domain.
+# CADDY_REDIRECT_ADDRESSES="http://203.0.113.10"; an unused placeholder when not set.
+{$CADDY_REDIRECT_ADDRESSES:http://redirect.invalid} {
+	redir https://{$BRAND_DOMAIN}{uri} permanent
+}

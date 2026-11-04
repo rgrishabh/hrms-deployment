@@ -1,0 +1,598 @@
+# HRMS on one host: dev.rgrishabh.in, a developer laptop, or an on-prem client of about 100 users.
+# Image tags come from versions.env, settings and secrets from .env, brand and identity from .brandenv.
+#
+#   make up        postgres -> provision -> migrate -> bootstrap -> backend, worker, frontend
+#   make down      stop the stack, keep the volumes
+#
+# Profiles (COMPOSE_PROFILES in .env): tls = Caddy on 80/443; local = plain HTTP on 127.0.0.1;
+# minio = S3-compatible storage; s3backup = off-host backup copy; tools = demo data.
+#
+# Rules this file must keep:
+# - The project name is literal. It selects the existing hrms-dev_* volumes, which hold live data.
+# - .env is never passed with env_file: it holds POSTGRES_SUPERUSER_PASSWORD and DB_OWNER_PASSWORD,
+#   and long-running services must not see them. Add new variables to the allowlists below.
+# - .brandenv is passed with env_file because it holds no secrets. Compose stops if it is missing,
+#   so branding cannot go silently blank.
+
+name: hrms-dev
+
+x-backend-image: &backend-image ${IMAGE_REGISTRY:-ghcr.io/rgrishabh}/hrms-backend:${BACKEND_TAG:?BACKEND_TAG missing (versions.env)}
+x-frontend-image: &frontend-image ${IMAGE_REGISTRY:-ghcr.io/rgrishabh}/hrms-frontend:${FRONTEND_TAG:?FRONTEND_TAG missing (versions.env)}
+x-postgres-image: &postgres-image postgres:17.11-alpine
+x-caddy-image: &caddy-image caddy:2.11.8-alpine
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+# Layer 1 of docs/CONFIGURATION.md. Defaults match the registry table in that page.
+x-features: &features
+  FEATURE_DOCUMENTS: ${FEATURE_DOCUMENTS:-true}
+  FEATURE_ONBOARDING: ${FEATURE_ONBOARDING:-false}
+  FEATURE_OFFBOARDING: ${FEATURE_OFFBOARDING:-false}
+  FEATURE_POLICIES: ${FEATURE_POLICIES:-false}
+  FEATURE_ATTENDANCE: ${FEATURE_ATTENDANCE:-true}
+  FEATURE_ATTENDANCE_WEB: ${FEATURE_ATTENDANCE_WEB:-true}
+  FEATURE_ATTENDANCE_MOBILE: ${FEATURE_ATTENDANCE_MOBILE:-false}
+  FEATURE_ATTENDANCE_GEOFENCE: ${FEATURE_ATTENDANCE_GEOFENCE:-false}
+  FEATURE_ATTENDANCE_SELFIE: ${FEATURE_ATTENDANCE_SELFIE:-false}
+  FEATURE_ATTENDANCE_BIOMETRIC: ${FEATURE_ATTENDANCE_BIOMETRIC:-false}
+  FEATURE_ATTENDANCE_REGULARIZATION: ${FEATURE_ATTENDANCE_REGULARIZATION:-true}
+  FEATURE_SHIFTS: ${FEATURE_SHIFTS:-true}
+  FEATURE_HOLIDAYS: ${FEATURE_HOLIDAYS:-true}
+  FEATURE_LEAVE: ${FEATURE_LEAVE:-true}
+  FEATURE_OVERTIME: ${FEATURE_OVERTIME:-false}
+  FEATURE_COMP_OFF: ${FEATURE_COMP_OFF:-false}
+  FEATURE_FIELD_DUTY: ${FEATURE_FIELD_DUTY:-false}
+  FEATURE_PAYROLL: ${FEATURE_PAYROLL:-false}
+  FEATURE_PAYSLIPS: ${FEATURE_PAYSLIPS:-false}
+  FEATURE_PAYROLL_STATUTORY: ${FEATURE_PAYROLL_STATUTORY:-false}
+  FEATURE_LOANS: ${FEATURE_LOANS:-false}
+  FEATURE_SALARY_ADVANCE: ${FEATURE_SALARY_ADVANCE:-false}
+  FEATURE_ACCOUNTING_EXPORTS: ${FEATURE_ACCOUNTING_EXPORTS:-false}
+  FEATURE_EXPENSE_CLAIMS: ${FEATURE_EXPENSE_CLAIMS:-false}
+  FEATURE_TRAVEL: ${FEATURE_TRAVEL:-false}
+  FEATURE_RECRUITMENT: ${FEATURE_RECRUITMENT:-false}
+  FEATURE_PERFORMANCE_REVIEW: ${FEATURE_PERFORMANCE_REVIEW:-false}
+  FEATURE_TRAINING: ${FEATURE_TRAINING:-false}
+  FEATURE_LAB_COMPETENCY: ${FEATURE_LAB_COMPETENCY:-false}
+  FEATURE_ASSET_MANAGEMENT: ${FEATURE_ASSET_MANAGEMENT:-false}
+  FEATURE_GRIEVANCE: ${FEATURE_GRIEVANCE:-false}
+  FEATURE_POSH: ${FEATURE_POSH:-false}
+  FEATURE_REPORTS_ADVANCED: ${FEATURE_REPORTS_ADVANCED:-false}
+  FEATURE_EMAIL_NOTIFICATIONS: ${FEATURE_EMAIL_NOTIFICATIONS:-true}
+  FEATURE_PUSH_NOTIFICATIONS: ${FEATURE_PUSH_NOTIFICATIONS:-false}
+
+# Shared by backend and worker. Holds the runtime database role only, never owner or superuser.
+x-runtime-env: &runtime-env
+  NODE_ENV: ${NODE_ENV:-production}
+  HOST: 0.0.0.0
+  PORT: "4000"
+  DATABASE_URL: postgres://hrms_app:${DB_APP_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
+  DATABASE_SSL: disable # private Docker network, database never exposed
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
+  DB_READ_HOST: ${DB_READ_HOST:-}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?Run bin/init-env to generate secrets}@redis:6379/0
+  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Run bin/init-env to generate secrets}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  TRUST_PROXY: "true"
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+  ORG_MANAGEMENT_MODE: ${ORG_MANAGEMENT_MODE:-multi}
+  MFA_AVAILABLE: ${MFA_AVAILABLE:-false}
+  MFA_ENFORCED: ${MFA_ENFORCED:-false}
+  MFA_METHODS: ${MFA_METHODS:-}
+  STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+  STORAGE_PATH: /app/storage
+  STORAGE_MAX_FILE_MB: ${STORAGE_MAX_FILE_MB:-10}
+  AWS_S3_BUCKET: ${AWS_S3_BUCKET:-}
+  AWS_REGION: ${AWS_REGION:-ap-south-1}
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: "3310"
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_SECURE: ${SMTP_SECURE:-none}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+
+x-runtime-depends: &runtime-depends
+  bootstrap: { condition: service_completed_successfully }
+  redis: { condition: service_healthy }
+  mailpit: { condition: service_healthy }
+  clamav: { condition: service_healthy }
+
+services:
+  postgres:
+    image: *postgres-image
+    user: "70:70" # postgres in the Alpine image; owns the existing data volume
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql:uid=70,gid=70,mode=0775
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    <<: *logging
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 200
+    shm_size: 256mb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - max_connections=100
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Run bin/init-env to generate secrets}
+      POSTGRES_DB: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks: [internal]
+    # No ports published: the database is reachable only from this project's internal network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Cache only: no persistence, so a restart is an empty cache and the app reads the database.
+  redis:
+    image: redis:7.4.12-alpine
+    user: "999:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /data:uid=999,gid=1000,mode=0750
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    <<: *logging
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --save "" --appendonly no --maxmemory 200mb --maxmemory-policy allkeys-lru
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run bin/init-env to generate secrets}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Run bin/init-env to generate secrets}
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Catches all outgoing mail in dev. The UI is not published; see docker-compose.override.example.yml.
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    user: "1000:1000"
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 64
+    environment:
+      MP_MAX_MESSAGES: "2000"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    networks: [internal, edge]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Upload malware scanning. /init-unprivileged is the image's own non-root entrypoint.
+  clamav:
+    image: clamav/clamav:1.5.4
+    user: "100:101"
+    entrypoint: ["/init-unprivileged"]
+    read_only: true
+    tmpfs:
+      - /tmp:uid=100,gid=101,mode=1777
+      - /var/log/clamav:uid=100,gid=101,mode=0750
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    <<: *logging
+    restart: unless-stopped
+    mem_limit: 1500m
+    cpus: 1
+    pids_limit: 128
+    volumes:
+      - clamav-db:/var/lib/clamav
+    networks: [internal, edge] # edge: freshclam downloads signatures
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 5m
+
+  # One-off, as root with narrow capabilities: gives the non-root services the volumes that the
+  # first version of this stack created as root. No network. Safe to repeat.
+  volume-perms:
+    image: *postgres-image
+    user: "0:0"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_READ_SEARCH", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    <<: *logging
+    entrypoint: ["chown", "-R", "1000:1000", "/backups", "/caddy-data", "/caddy-config", "/app-storage", "/minio-data"]
+    volumes:
+      - backups:/backups
+      - caddy-data:/caddy-data
+      - caddy-config:/caddy-config
+      - app-storage:/app-storage
+      - minio-data:/minio-data
+    network_mode: none
+    restart: "no"
+
+  # Creates or rotates the hrms_owner and hrms_app roles and the database. Idempotent.
+  # The only service besides postgres that sees the superuser password.
+  provision:
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["provision"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    environment:
+      DB_HOST: postgres
+      DB_NAME: hrms
+      DB_ADMIN_USER: postgres
+      DB_ADMIN_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Run bin/init-env to generate secrets}
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?Run bin/init-env to generate secrets}
+      DATABASE_SSL: disable
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+    restart: "no"
+
+  # Pending migrations: forward-only, checksummed, serialized by an advisory lock.
+  migrate:
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["migrate"]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 64
+    environment:
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
+      DATABASE_SSL: disable
+    depends_on:
+      provision: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
+  # Creates the organization and first administrator. Idempotent. The one-time setup link it prints
+  # the first time is captured by bin/stack-up into setup-link.txt, before this runs under `up`.
+  bootstrap:
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["bootstrap"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    env_file: [.brandenv]
+    environment:
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
+      DATABASE_SSL: disable
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL in .env}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
+  backend:
+    image: *backend-image
+    <<: [*hardening, *logging]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 768m
+    cpus: 1
+    pids_limit: 200
+    depends_on: *runtime-depends
+    env_file: [.brandenv]
+    environment:
+      <<: [*runtime-env, *features]
+      PROCESS_ROLE: api
+    volumes:
+      - ./brand:/brand:ro
+      - app-storage:/app/storage
+    networks: [internal, edge]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:4000/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Same image and environment as backend. Runs scheduled jobs and sends email; takes no traffic.
+  worker:
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["worker"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    mem_limit: 512m
+    cpus: 0.75
+    pids_limit: 200
+    depends_on: *runtime-depends
+    env_file: [.brandenv]
+    environment:
+      <<: [*runtime-env, *features]
+      PROCESS_ROLE: worker
+    volumes:
+      - ./brand:/brand:ro
+      - app-storage:/app/storage
+    networks: [internal, edge] # edge: real SMTP in on-prem installations
+    # The worker has no HTTP port, so this shows only that the container can run node.
+    healthcheck:
+      test: ["CMD", "node", "-e", "0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    image: *frontend-image
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    env_file: [.brandenv]
+    environment:
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-dev}
+      HSTS: "false" # set once, by Caddy
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Automatic HTTPS and same-origin routing. Service name and caddy-data volume are kept from the
+  # first stack so the live certificate carries over. Non-root; the sysctl lets it bind 80 and 443.
+  caddy:
+    profiles: ["tls"]
+    image: *caddy-image
+    user: "1000:1000"
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 128
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - export SITE_ADDRESS="$$BRAND_DOMAIN$${BRAND_EXTRA_DOMAINS:+,$$BRAND_EXTRA_DOMAINS}"; exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    depends_on:
+      volume-perms: { condition: service_completed_successfully }
+      backend: { condition: service_healthy }
+      frontend: { condition: service_healthy }
+    env_file: [.brandenv]
+    environment:
+      CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}
+      CADDY_TLS: ${CADDY_TLS:-}
+      CADDY_REDIRECT_ADDRESSES: ${CADDY_REDIRECT_ADDRESSES:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Same routing over plain HTTP on the loopback interface, for a laptop.
+  gateway:
+    profiles: ["local"]
+    image: *caddy-image
+    user: "1000:1000"
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 128
+    depends_on:
+      backend: { condition: service_healthy }
+      frontend: { condition: service_healthy }
+    environment:
+      SITE_ADDRESS: ":8088"
+      BRAND_DOMAIN: localhost
+      XDG_DATA_HOME: /tmp/data # nothing to keep: no certificates on plain HTTP
+      XDG_CONFIG_HOME: /tmp/config
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8088}:8088"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Daily database and documents backup into the backups volume. Unhealthy after a failed run.
+  backup:
+    image: *postgres-image
+    user: "1000:1000" # reads app-storage, owned by the backend's UID
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 64
+    entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: hrms_owner
+      PGPASSWORD: ${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}
+      PGDATABASE: hrms
+      TZ: ${BACKUP_TZ:-Asia/Kolkata}
+      BACKUP_AT: ${BACKUP_AT:-02:30}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-26}
+    volumes:
+      - ./bin/backup-loop.sh:/scripts/backup-loop.sh:ro
+      - backups:/backups
+      - app-storage:/storage:ro
+      - minio-data:/minio:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      volume-perms: { condition: service_completed_successfully }
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/scripts/backup-loop.sh", "--check"]
+      interval: 5m
+      timeout: 10s
+      retries: 1
+      start_period: 30s
+
+  # Optional off-host copy: COMPOSE_PROFILES includes s3backup and BACKUP_S3_URI is set.
+  backup-s3:
+    profiles: ["s3backup"]
+    image: amazon/aws-cli:2.39.3
+    user: "1000:1000"
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 64
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export HOME=/tmp
+        while true; do
+          date +%s > /tmp/last-attempt
+          if aws s3 sync /backups "$$BACKUP_S3_URI" --only-show-errors --sse aws:kms --exclude '.*' --exclude '*/.*'; then
+            echo "s3 sync ok"; date +%s > /tmp/last-success
+          else
+            echo "s3 sync FAILED" >&2; rm -f /tmp/last-success
+          fi
+          sleep 3600
+        done
+    environment:
+      BACKUP_S3_URI: ${BACKUP_S3_URI:-}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+    volumes:
+      - backups:/backups:ro
+    networks: [edge]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/last-success"]
+      interval: 5m
+      timeout: 5s
+      retries: 2
+      start_period: 2m
+
+  # Optional S3-compatible storage: STORAGE_DRIVER=s3 and S3_ENDPOINT=http://minio:9000. Console not published.
+  minio:
+    profiles: ["minio"]
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    user: "1000:1000"
+    <<: [*hardening, *logging]
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
+    command: ["server", "/data", "--address", ":9000", "--console-address", "127.0.0.1:9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-}
+    depends_on:
+      volume-perms: { condition: service_completed_successfully }
+    volumes:
+      - minio-data:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  minio-init:
+    profiles: ["minio"]
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    user: "1000:1000"
+    <<: [*hardening, *logging]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 32
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - export HOME=/tmp; mc alias set local http://minio:9000 "$$S3_ACCESS_KEY_ID" "$$S3_SECRET_ACCESS_KEY" && mc mb --ignore-existing "local/$$AWS_S3_BUCKET"
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-hrms-documents}
+    depends_on:
+      minio: { condition: service_healthy }
+    networks: [internal]
+    restart: "no"
+
+  # One-off, dev and demo only: fills an empty, bootstrapped installation with a synthetic laboratory.
+  # Run it with `make seed`. The backend refuses if any real employee exists.
+  demo:
+    profiles: ["tools"]
+    image: *backend-image
+    <<: [*hardening, *logging]
+    command: ["demo"]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 64
+    env_file: [.brandenv]
+    environment:
+      DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
+      DATABASE_SSL: disable
+      DEMO_DATA_ALLOWED: ${DEMO_DATA_ALLOWED:-false}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [internal]
+    restart: "no"
+
+networks:
+  internal:
+    internal: true # no route outside the host: database, cache, backups and one-off jobs
+  edge: {}
+
+# Names are part of the live installation: hrms-dev_<name> holds its data. Do not rename.
+volumes:
+  db-data:
+  app-storage:
+  backups:
+  caddy-data:
+  caddy-config:
+  clamav-db:
+  minio-data:

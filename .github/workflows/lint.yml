@@ -32,6 +32,14 @@ jobs:
         run: |
           shellcheck scripts/*.sh scripts/lib/*.sh environments/dev/bin/dc environments/dev/bin/backup environments/dev/bin/restore environments/dev/bin/init-env environments/dev/bin/demo-data
           shellcheck -s sh environments/dev/bin/backup-loop.sh
+          shellcheck dev/deploy-dev.sh dev/bin/dc dev/bin/backup dev/bin/restore dev/bin/init-env dev/bin/demo-data dev/bin/stack-up dev/tests/*.sh
+          shellcheck -s sh dev/bin/backup-loop.sh dev/bin/check-brandenv
+      - name: Dev stack tests (no Docker daemon needed)
+        run: |
+          cmp dev/bin/backup-loop.sh environments/dev/bin/backup-loop.sh
+          dev/tests/backup-loop.test.sh
+          dev/tests/check-brandenv.test.sh
+          dev/tests/deploy-order.test.sh
       - name: Compose config (sample values)
         working-directory: environments/dev
         run: |
@@ -41,6 +49,16 @@ jobs:
           printf 'BACKEND_TAG=sha-0000000\nFRONTEND_TAG=sha-0000000\n' > "$RUNNER_TEMP/versions.env"
           docker compose --env-file "$RUNNER_TEMP/dev.env" --env-file "$RUNNER_TEMP/versions.env" --profile tools --profile s3backup config --quiet
           echo "compose config ok" >> "$GITHUB_STEP_SUMMARY"
+      - name: Compose config, dev/ stack (sample values)
+        working-directory: dev
+        run: |
+          sed -e 's#<[^>]*>#placeholder@example.com#g' .env.example > "$RUNNER_TEMP/dev2.env"
+          for k in POSTGRES_SUPERUSER_PASSWORD DB_OWNER_PASSWORD DB_APP_PASSWORD REDIS_PASSWORD DATA_ENCRYPTION_KEY; do sed -i "s#^$k=.*#$k=ci-secret#" "$RUNNER_TEMP/dev2.env"; done
+          printf 'BACKEND_TAG=sha-0000000\nFRONTEND_TAG=sha-0000000\n' > "$RUNNER_TEMP/versions2.env"
+          ! docker compose --env-file "$RUNNER_TEMP/dev2.env" --env-file "$RUNNER_TEMP/versions2.env" config --quiet 2>/dev/null || { echo "::error::Compose accepted a missing .brandenv"; exit 1; }
+          cp .brandenv.example .brandenv
+          docker compose --env-file "$RUNNER_TEMP/dev2.env" --env-file "$RUNNER_TEMP/versions2.env" --profile tls --profile local --profile minio --profile s3backup --profile tools config --quiet
+          rm .brandenv
 
   secrets:
     runs-on: ubuntu-latest

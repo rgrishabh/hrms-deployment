@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2034 # assertions are single-quoted on purpose: expect() evals them later
 # Behaviour test for backup-loop.sh, using stub pg_dump, pg_restore, tar and sleep on PATH.
 # Runs without Docker or Postgres. The script's fixed container paths are rewritten into a temp dir.
 #   dev/tests/backup-loop.test.sh [path/to/backup-loop.sh ...]

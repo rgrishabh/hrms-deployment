@@ -1,0 +1,55 @@
+#!/bin/sh
+# Validates .brandenv against docs/CONFIGURATION.md before anything starts, so a missing or partly
+# filled file fails here with a clear message rather than as blank branding.
+#   bin/check-brandenv [path]
+set -eu
+cd "$(dirname "$0")/.."
+file=${1:-.brandenv}
+[ -f "$file" ] || { echo "error: $file is missing. Run: cp .brandenv.example .brandenv and fill it in." >&2; exit 1; }
+
+problems=0
+problem() { echo "error: $file: $1" >&2; problems=$((problems + 1)); }
+
+# Last assignment wins, as in env files. Surrounding quotes are removed.
+value() {
+  sed -n "s/^$1=//p" "$file" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+}
+matches() { printf '%s\n' "$1" | grep -Eq "$2"; }
+required() {
+  [ -n "$(value "$1")" ] || problem "$1 is required"
+}
+format() { # name regex message
+  v=$(value "$1")
+  [ -z "$v" ] || matches "$v" "$2" || problem "$1 $3 (got '$v')"
+}
+
+for key in BRAND_NAME BRAND_PRODUCT_NAME BRAND_PRIMARY_COLOR BRAND_SUPPORT_EMAIL BRAND_EMAIL_FROM \
+           BRAND_DOMAIN BRAND_LOCALE BRAND_TIMEZONE BRAND_CURRENCY BRAND_DATE_FORMAT \
+           BRAND_FINANCIAL_YEAR_START BRAND_COUNTRY; do
+  required "$key"
+done
+
+color='^#[0-9A-Fa-f]{6}$'
+format BRAND_PRIMARY_COLOR "$color" 'must be #rrggbb, quoted'
+format BRAND_SECONDARY_COLOR "$color" 'must be #rrggbb, quoted'
+format BRAND_ACCENT_COLOR "$color" 'must be #rrggbb, quoted'
+email='^[^@[:space:]]+@[^@[:space:]]+$'
+format BRAND_SUPPORT_EMAIL "$email" 'must be an email address'
+format BRAND_EMAIL_FROM "$email" 'must be an email address'
+format BRAND_DOMAIN '^[A-Za-z0-9.-]+$' 'must be a hostname, without scheme or path'
+format BRAND_EXTRA_DOMAINS '^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$' 'must be comma-separated hostnames'
+format BRAND_LOCALE '^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$' 'must be BCP 47, for example en-IN'
+format BRAND_CURRENCY '^[A-Z]{3}$' 'must be ISO 4217'
+format BRAND_COUNTRY '^[A-Z]{2}$' 'must be ISO 3166-1 alpha-2'
+format BRAND_DATE_FORMAT '^(DD/MM/YYYY|DD-MM-YYYY|DD-MMM-YYYY|YYYY-MM-DD)$' 'is not a supported format'
+format BRAND_FINANCIAL_YEAR_START '^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' 'must be MM-DD'
+logo='^(https://|/brand/)'
+format BRAND_LOGO_URL "$logo" 'must be https:// or /brand/<file>'
+format BRAND_LOGO_DARK_URL "$logo" 'must be https:// or /brand/<file>'
+format BRAND_FAVICON_URL "$logo" 'must be https:// or /brand/<file>'
+
+name=$(value BRAND_NAME); [ "${#name}" -le 120 ] || problem "BRAND_NAME is longer than 120 characters"
+product=$(value BRAND_PRODUCT_NAME); [ "${#product}" -le 60 ] || problem "BRAND_PRODUCT_NAME is longer than 60 characters"
+legal=$(value BRAND_LEGAL_NAME); [ "${#legal}" -le 200 ] || problem "BRAND_LEGAL_NAME is longer than 200 characters"
+
+[ "$problems" -eq 0 ] || { echo "$problems problem(s) in $file" >&2; exit 1; }
