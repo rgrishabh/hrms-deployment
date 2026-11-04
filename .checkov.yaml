@@ -1,0 +1,21 @@
+# Checks of the never-applied ECS stack, which docs/CUTOVER.md removes, are skipped by path. Everything
+# else is checked. Suppressions are inline, each with its reason.
+quiet: true
+compact: true
+download-external-modules: false
+skip-path:
+  - terraform/modules/hrms-stack
+  - terraform/envs/customer
+  - .terraform
+  - k8s/build
+  - k8s/policies/tests
+  - environments/dev
+skip-check:
+  # Images run as fixed UIDs (backend 1000, frontend 101, ClamAV 100). They own files inside the images,
+  # and the Compose volumes depend on them. runAsNonRoot and Kyverno still block root.
+  - CKV_K8S_40
+  # The application reads configuration from the environment by design (docs/CONFIGURATION.md).
+  - CKV_K8S_35
+  # Manual inputs on deploy workflows only choose an already-signed, already-built image tag. This
+  # SLSA check is written for build workflows.
+  - CKV_GHA_7

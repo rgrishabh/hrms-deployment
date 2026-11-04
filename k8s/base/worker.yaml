@@ -52,6 +52,11 @@ spec:
           env:
             - { name: PROCESS_ROLE, value: worker }
             - { name: DATABASE_POOL_MAX, value: "5" }
+          # Container health only: the worker has no port, so these cannot see a stuck job loop.
+          readinessProbe:
+            exec: { command: [node, -e, "0"] }
+            periodSeconds: 30
+            timeoutSeconds: 10
           startupProbe:
             exec: { command: [node, -e, "0"] }
             periodSeconds: 5

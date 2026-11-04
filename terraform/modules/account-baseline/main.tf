@@ -26,6 +26,12 @@ variable "enable_guardduty" {
   default     = true
 }
 
+variable "state_kms_key_arn" {
+  description = "Key of the Terraform state bucket. The plan role needs it: ReadOnlyAccess has no kms:Decrypt, so plans could not read an encrypted state."
+  type        = string
+  default     = null
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
@@ -139,6 +145,20 @@ resource "aws_iam_role_policy" "terraform_plan_deny" {
       Effect      = "Deny"
       Action      = ["secretsmanager:GetSecretValue", "s3:GetObject*", "logs:GetLogEvents", "logs:FilterLogEvents", "rds:DownloadDBLogFilePortion"]
       NotResource = ["arn:${data.aws_partition.this.partition}:s3:::hrms-terraform-state-*/*"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "terraform_plan_state_key" {
+  count = var.state_kms_key_arn == null ? 0 : 1
+  name  = "decrypt-state"
+  role  = aws_iam_role.terraform_plan.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "kms:Decrypt"
+      Resource = var.state_kms_key_arn
     }]
   })
 }

@@ -26,10 +26,6 @@ variable "organization_id" {
   type = string
 }
 
-variable "github_repository" {
-  type = string
-}
-
 provider "aws" {
   region              = var.region
   allowed_account_ids = [var.account_id]
@@ -39,23 +35,10 @@ provider "aws" {
 }
 
 module "shared" {
-  source            = "../../modules/shared-services"
-  organization_id   = var.organization_id
-  github_repository = var.github_repository
-}
-
-output "ecr_repository_url" {
-  value = module.shared.ecr_repository_url
-}
-
-output "ecr_repository_arn" {
-  value = module.shared.ecr_repository_arn
+  source          = "../../modules/shared-services"
+  organization_id = var.organization_id
 }
 
 output "state_bucket" {
   value = module.shared.state_bucket
-}
-
-output "build_role_arn" {
-  value = module.shared.build_role_arn
 }

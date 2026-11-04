@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # the backticks in these patterns are literal Markdown
 # Keeps the three places that list settings in step: the contract (docs/CONFIGURATION.md), the Compose
 # allowlist (dev/docker-compose.yml) and the Kustomize files (k8s/overlays/prod). A variable missing
 # from the Compose allowlist silently does nothing, so this is checked rather than left to review.

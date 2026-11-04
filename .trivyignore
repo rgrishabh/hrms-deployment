@@ -1,0 +1,6 @@
+# KSV-0125 "untrusted registry": the default list has neither ghcr.io nor Docker Hub. Images here are
+# pinned by digest and enforced by Kyverno; ours are also signed.
+KSV-0125
+# KSV-01010 "sensitive contents in ConfigMap": matches names such as PORT and BRAND_SUPPORT_EMAIL.
+# These ConfigMaps hold layer 1 and 2 settings, and secrets are in External Secrets.
+KSV-01010

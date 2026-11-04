@@ -1,0 +1,4 @@
+# terraform init -backend-config=<client>.backend.hcl
+bucket = "hrms-terraform-state-<shared-account>"
+key    = "<client>/prod-low/terraform.tfstate"
+region = "ap-south-1"
