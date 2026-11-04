@@ -1,5 +1,7 @@
 # Operations runbook
 
+> **Parts of this page describe the ECS design, which was never applied and is removed in [CUTOVER.md](CUTOVER.md).** The new tiers are in [ARCHITECTURE.md](ARCHITECTURE.md), and `terraform/envs/prod-*`. The ECR registry and build role mentioned here were removed.
+
 ## Health
 
 | Endpoint | Meaning | Use |

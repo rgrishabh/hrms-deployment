@@ -3,9 +3,8 @@
 # filled file fails here with a clear message rather than as blank branding.
 #   bin/check-brandenv [path]
 set -eu
-cd "$(dirname "$0")/.."
-file=${1:-.brandenv}
-[ -f "$file" ] || { echo "error: $file is missing. Run: cp .brandenv.example .brandenv and fill it in." >&2; exit 1; }
+file=${1:-$(dirname "$0")/../.brandenv}
+[ -f "$file" ] || { echo "error: $file is missing. Copy .brandenv.example to .brandenv and fill it in." >&2; exit 1; }
 
 problems=0
 problem() { echo "error: $file: $1" >&2; problems=$((problems + 1)); }

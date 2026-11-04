@@ -1,5 +1,7 @@
 # Deployment guide
 
+> **Parts of this page describe the ECS design, which was never applied and is removed in [CUTOVER.md](CUTOVER.md).** The new tiers are in [ARCHITECTURE.md](ARCHITECTURE.md), and `terraform/envs/prod-*`. The ECR registry and build role mentioned here were removed.
+
 > **Repository layout changed (three repos).** Pipelines and day-to-day procedures: [RUNBOOK.md](RUNBOOK.md) and
 > [ONE-TIME-SETUP.md](ONE-TIME-SETUP.md). The Compose installation now lives in `environments/dev/` (two images:
 > `hrms-backend` and `hrms-frontend`, tags in `versions.env`; services `backend`/`frontend` instead of `app`), Terraform

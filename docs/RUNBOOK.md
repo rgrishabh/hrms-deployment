@@ -1,7 +1,13 @@
 # Runbook
 
-Day-to-day operations for dev (`dev.rgrishabh.in`, EC2 + Compose) and production (one AWS account per customer).
+Day-to-day operations for dev (`dev.rgrishabh.in`, EC2 + Compose) and production.
 Deeper app-level procedures are in [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md) and [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
+
+Three things are in transition, and this page says which it means:
+
+- **Dev:** `environments/dev` is live until the variable `DEV_STACK_DIR` is set to `dev` ([CUTOVER.md](CUTOVER.md)). Sections below written for it say `db`; on the new stack that service is `postgres`. Everything else carries over, and the commands are in [The dev/ stack](#the-dev-stack).
+- **Prod on ECS:** the sections below mentioning ECS describe a design that was never run, and it goes away in the cutover.
+- **Prod on Kubernetes:** see [Kubernetes tiers](#kubernetes-tiers). These have also never run.
 
 ## Deploy
 
@@ -30,8 +36,8 @@ release's code. Removals ship one release later. This is what makes rollbacks sa
 
 ```bash
 # dev
-ssh ubuntu@13.211.243.2 'cd /opt/hrms/dev && bin/dc logs -f --tail 200 backend'      # or frontend, caddy, db, backup
-ssh ubuntu@13.211.243.2 'cd /opt/hrms/dev && bin/dc ps'
+ssh ubuntu@<dev-host> 'cd /opt/hrms/dev && bin/dc logs -f --tail 200 backend'      # or frontend, caddy, db, backup
+ssh ubuntu@<dev-host> 'cd /opt/hrms/dev && bin/dc ps'
 # prod (customer account credentials)
 aws logs tail /hrms/api --follow --since 30m      # backend (JSON)
 aws logs tail /hrms/web --follow                  # frontend nginx
@@ -75,7 +81,7 @@ authorizations, policies, recruitment, salaries, assets, reviews) and 10 persona
 **Dev (nightly sets in the `backups` volume, optionally copied to S3):**
 
 ```bash
-ssh ubuntu@13.211.243.2
+ssh ubuntu@<dev-host>
 cd /opt/hrms/dev
 bin/dc exec backup ls /backups                         # hrms-YYYYMMDD-HHMMSS
 bin/dc cp backup:/backups/hrms-20261103-023000 /tmp/restore-set
@@ -124,3 +130,111 @@ deploy and point the task definitions there:
    `ssm:GetCommandInvocation`, `ssm:PutParameter`/`DeleteParameter` on `/hrms/dev/*`, and S3 put/delete on the bucket prefix.
 3. Set env `dev` vars: `DEV_DEPLOY_METHOD=ssm`, `DEV_AWS_ROLE_ARN`, `DEV_INSTANCE_ID`, `DEV_ARTIFACT_BUCKET`. Remove the
    SSH rule from the security group. (This path is implemented in `scripts/lib/ssm-deploy-dev.sh` but has not been run yet.)
+
+## The dev/ stack
+
+Works the same on the dev host, a laptop and an on-prem client. From `dev/` (`/opt/hrms/dev` on the host):
+
+| Task | Command |
+|---|---|
+| First time | `make init`, fill in `.env` and `.brandenv` |
+| Start in order | `make up` |
+| Stop, keeping data | `make down` |
+| Logs | `make logs S=backend` |
+| State and health | `make ps` |
+| Migrations only | `make migrate` |
+| Demo data | `make seed` |
+| Backup now | `make backup` |
+| Restore | `make restore SET=path/to/hrms-<ts> CONFIRM=hrms-dev` |
+| Offline tests | `make test` |
+
+**Local access.** With `COMPOSE_PROFILES=local`, the site is at `http://localhost:8088`. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` for caught email at `http://localhost:8025`.
+
+**On-prem, about 100 users.** Use a host of 4 vCPU and 8 GB, and set in `.env`:
+
+- `NODE_ENV=production`
+- `COMPOSE_PROFILES=tls` (plus `s3backup` for an off-host copy)
+- real `SMTP_*` with `SMTP_SECURE=starttls`
+- `MFA_AVAILABLE=true`
+- `CADDY_TLS="tls internal"` if there is no public DNS, in which case users must trust Caddy's private CA
+
+**Missing `.brandenv`.** Compose stops with `env file .brandenv not found`. `bin/check-brandenv` reports what's wrong with a partial file.
+
+**The `backup` container is unhealthy.** Its last run failed, or the last good one is older than 26 hours. Run `make backup` and read the error. A success clears it. While it's unhealthy, `make up` also fails at `--wait`, which is deliberate: no good backup should not go unnoticed. `/backups/.hrms-*` directories hold the failed attempts for diagnosis.
+
+**ClamAV is slow to start.** Expect a few minutes, with `WAIT_TIMEOUT` at 600 seconds. It also needs up to 2 GB of memory during a signature reload.
+
+## Kubernetes tiers
+
+Applied by Argo CD from the client's private repository. Base and components live here, at a fixed tag.
+
+### Deploy a release
+
+```bash
+scripts/k8s-release.sh overlay sha256:<backend> sha256:<frontend> 1.2.0
+git commit -am "release 1.2.0" && git push
+```
+
+Argo CD then works through the sync waves:
+
+1. ExternalSecrets and other prerequisites
+2. Job `hrms-provision-1.2.0`, and it waits for completion
+3. Job `hrms-migrate-1.2.0`
+4. Job `hrms-bootstrap-1.2.0`
+5. The apps, which roll when digests or the hashed ConfigMaps change
+
+A failed Job stops the sync before the apps change. Take an RDS snapshot before merging, until the release job in [CUTOVER.md](CUTOVER.md) Step 4 does it for you:
+
+```bash
+aws rds create-db-snapshot --db-instance-identifier hrms-db --db-snapshot-identifier hrms-pre-1-2-0
+```
+
+**Why the release id must change.** A Job's spec cannot be edited. A new image under the same Job name makes the sync fail, and a new name is a new Job. The previous release's Jobs are pruned once they leave the manifest. Without Argo CD, apply in the same order, using `kubectl wait --for=condition=complete job/<name>` between Jobs, and delete old Jobs yourself.
+
+### Roll back
+
+Revert the commit in the client's repository. Migrations do not run backward: they are expand/contract, so the old image tolerates the newer schema. The revert reuses the old release id, which is fine because that release's Jobs were pruned and are recreated, and provision and migrate are idempotent.
+
+### Change settings
+
+| Change | Edit in the client's repository |
+|---|---|
+| Feature flag or mode | `overlay/app.env` |
+| Brand or identity | `overlay/brand.env`, `overlay/brand/` |
+| Tier | One line in `overlay/kustomization.yaml`, plus the matching Terraform root |
+
+ConfigMap names carry a hash, so a change restarts the pods that use them.
+
+### Look at things
+
+```bash
+kubectl -n hrms get pods,jobs,externalsecrets
+kubectl -n hrms logs deploy/hrms-backend --tail 100
+kubectl -n hrms logs job/hrms-migrate-1.2.0
+kubectl -n argocd port-forward svc/argocd-server 8080:443
+```
+
+**Reach the cluster.** On k3s: `aws ssm start-session --target <instance>`, then `sudo k3s kubectl ...`. On EKS: add your address to `endpoint_public_cidrs` and apply, and remove it afterwards.
+
+### Common failures
+
+| Symptom | Likely cause |
+|---|---|
+| `ExternalSecret` not ready, `hrms-runtime` | `hrms/data-key-ciphertext` has no value: run `scripts/generate-data-key.sh` |
+| `ImagePullBackOff` with all zeros | The overlay still has placeholder digests: run `scripts/k8s-release.sh` |
+| `ImagePullBackOff`, `exec format error` | Image lacks `linux/arm64`: release builds need the `platforms` input |
+| Backend restarts, naming a variable | Contract validation. Check `app.env` and `brand.env` against [CONFIGURATION.md](CONFIGURATION.md) |
+| Backend stays unready | `/health/ready` needs migrations applied and a tenant: read the migrate and bootstrap Jobs |
+| Email never arrives | `FEATURE_EMAIL_NOTIFICATIONS`, `hrms/smtp-credentials`, then worker logs. Egress on 587 and 465 is allowed |
+| Tier-low: everything returns 503 | Node replaced and still installing. Check the ALB target group, then `journalctl -u k3s` through SSM |
+| Sync blocked by a Kyverno message | A digest or limit is missing: read the message |
+
+### Rotate secrets (Kubernetes tiers)
+
+| Secret | Rotate |
+|---|---|
+| `hrms_owner`, `hrms_app` | Bump `password_version` in the `secrets` module and apply, then cut a release, so that provision re-applies them. Expect brief errors until pods restart with the new secret |
+| RDS master | RDS-managed. Provision reads the current value at each release |
+| SMTP | `aws secretsmanager put-secret-value --secret-id hrms/smtp-credentials`, then restart backend and worker |
+| Redis AUTH token | `terraform taint` the `random_password` in `elasticache`, apply, and restart pods |
+| Data key | **Never by replacement.** It needs the re-encryption job |

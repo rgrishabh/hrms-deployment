@@ -6,7 +6,7 @@
 #
 # Usage: scripts/setup-github.sh [--owner rgrishabh] [--repos-dir ..] [--skip-push]
 # Optional inputs (environment variables; anything unset is skipped and reported):
-#   DEV_EC2_HOST=13.211.243.2 DEV_EC2_USER=ubuntu DEV_SITE=dev.example.com
+#   DEV_EC2_HOST=<dev-host> DEV_EC2_USER=ubuntu DEV_SITE=dev.example.com
 #   DEV_EC2_SSH_KEY_FILE=~/.ssh/id_ed25519     DEV_ENV_FILE_PATH=environments/dev/.env
 #   DEPLOY_REPO_TOKEN (fine-grained PAT: hrms-deployment Contents RW + Pull requests RW; app repos read)
 #   DEPLOY_APP_ID + DEPLOY_APP_PRIVATE_KEY_FILE (GitHub App alternative to the PAT; preferred)
