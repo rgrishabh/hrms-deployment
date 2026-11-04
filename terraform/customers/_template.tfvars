@@ -47,6 +47,18 @@ mail = {
   from_name    = null
 }
 
+# SMS (add "notifications.sms" to enabled_modules). The provider's auth header ("Name: value") goes into
+# the secret hrms/sms-auth-header (aws secretsmanager put-secret-value), never here. Templates are entered
+# in HRMS (Settings → SMS) as registered on the operator's DLT platform.
+sms = {
+  transport     = "disabled" # or "http"
+  http_url      = null       # the provider's https send endpoint
+  content_type  = "json"     # or "form"
+  body          = null       # see the backend's docs/SMS.md
+  sender_id     = null       # DLT header
+  dlt_entity_id = null
+}
+
 # First administrator: created by the bootstrap task on the first release; temporary password
 # is in Secrets Manager (hrms/bootstrap-admin) and must be changed at first sign-in.
 admin_email = "<it-admin@customer-domain>"

@@ -51,6 +51,7 @@ module "hrms" {
   route53_zone_id = var.route53_zone_id
   enabled_modules = var.enabled_modules
   mail            = var.mail
+  sms             = var.sms
   organization    = var.organization
   branding        = var.branding
   admin_email     = var.admin_email
