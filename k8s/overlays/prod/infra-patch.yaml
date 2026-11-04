@@ -1,0 +1,30 @@
+# Filled in by scripts/new-client-overlay.sh from `terraform output`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-backend
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/hrms-backend
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-worker
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/hrms-worker
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-secrets
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/hrms-external-secrets
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hrms
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:000000000000:certificate/00000000-0000-0000-0000-000000000000
+    alb.ingress.kubernetes.io/security-groups: sg-00000000000000000
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"

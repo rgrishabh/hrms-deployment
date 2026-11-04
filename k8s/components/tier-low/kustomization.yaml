@@ -1,0 +1,56 @@
+# k3s on one Graviton node, about 100 to 300 users. Traefik behind the Terraform-managed ALB, node
+# role instead of IRSA (DECISIONS.md, ADR-005), no Redis, single replicas that can grow to two.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - allow-imds.yaml
+patches:
+  - target: { kind: HorizontalPodAutoscaler, name: hrms-backend }
+    patch: |
+      - { op: replace, path: /spec/minReplicas, value: 1 }
+      - { op: replace, path: /spec/maxReplicas, value: 2 }
+  - target: { kind: HorizontalPodAutoscaler, name: hrms-frontend }
+    patch: |
+      - { op: replace, path: /spec/minReplicas, value: 1 }
+      - { op: replace, path: /spec/maxReplicas, value: 2 }
+  - target: { kind: Ingress, name: hrms }
+    patch: |
+      - { op: remove, path: /metadata/annotations }
+      - { op: replace, path: /spec/ingressClassName, value: traefik }
+  - target: { kind: SecretStore, name: aws }
+    patch: |
+      - { op: remove, path: /spec/provider/aws/auth }
+  - patch: |
+      $patch: delete
+      apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      metadata:
+        name: hrms-cache
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hrms-backend
+      spec:
+        template:
+          spec:
+            containers:
+              - name: backend
+                env:
+                  - { name: DATABASE_POOL_MAX, value: "8" }
+                resources:
+                  requests: { cpu: 200m, memory: 320Mi }
+                  limits: { cpu: "1", memory: 640Mi }
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hrms-frontend
+      spec:
+        template:
+          spec:
+            containers:
+              - name: frontend
+                resources:
+                  requests: { cpu: 25m, memory: 32Mi }
+                  limits: { cpu: 200m, memory: 96Mi }

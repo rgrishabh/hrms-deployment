@@ -1,0 +1,63 @@
+# Each Deployment breaks exactly one policy. scripts/k8s-policy-check.sh expects all three to fail.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uses-latest
+  namespace: hrms
+spec:
+  selector: { matchLabels: { app: uses-latest } }
+  template:
+    metadata: { labels: { app: uses-latest } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      containers:
+        - name: app
+          image: ghcr.io/rgrishabh/hrms-backend:latest
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 200m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runs-as-root
+  namespace: hrms
+spec:
+  selector: { matchLabels: { app: runs-as-root } }
+  template:
+    metadata: { labels: { app: runs-as-root } }
+    spec:
+      securityContext: { runAsUser: 0 }
+      containers:
+        - name: app
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 200m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: no-limits
+  namespace: hrms
+spec:
+  selector: { matchLabels: { app: no-limits } }
+  template:
+    metadata: { labels: { app: no-limits } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      containers:
+        - name: app
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }

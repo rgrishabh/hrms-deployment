@@ -1,0 +1,69 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-root
+  annotations:
+    policies.kyverno.io/title: Containers must not run as root
+    policies.kyverno.io/description: Requires runAsNonRoot, a non-zero UID when one is set, no privilege escalation, all capabilities dropped and a read-only root filesystem in the hrms namespace.
+spec:
+  background: true
+  rules:
+    - name: run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [hrms]
+      validate:
+        failureAction: Enforce
+        message: "Set securityContext.runAsNonRoot to true, on the pod or on every container."
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+              =(ephemeralContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): true
+              =(initContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): true
+              containers:
+                - =(securityContext):
+                    =(runAsNonRoot): true
+          - spec:
+              containers:
+                - securityContext:
+                    runAsNonRoot: true
+    - name: no-uid-zero
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [hrms]
+      validate:
+        failureAction: Enforce
+        message: "UID 0 is not allowed."
+        pattern:
+          spec:
+            =(securityContext):
+              =(runAsUser): ">0"
+            containers:
+              - =(securityContext):
+                  =(runAsUser): ">0"
+    - name: restricted-container
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [hrms]
+      validate:
+        failureAction: Enforce
+        message: "Containers need allowPrivilegeEscalation false, capabilities drop ALL and a read-only root filesystem."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: [ALL]

@@ -1,0 +1,29 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-limits
+  annotations:
+    policies.kyverno.io/title: Resource limits are required
+    policies.kyverno.io/description: Every HRMS container must declare CPU and memory requests and limits.
+spec:
+  background: true
+  rules:
+    - name: cpu-and-memory
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [hrms]
+      validate:
+        failureAction: Enforce
+        message: "CPU and memory requests and limits are required."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"

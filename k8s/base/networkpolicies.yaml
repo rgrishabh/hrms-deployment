@@ -1,0 +1,143 @@
+# Default deny in both directions, then the minimum for each workload. 10.0.0.0/8 covers the VPC
+# (ALB, RDS, ElastiCache) and the pod network. IMDS is excluded from general egress: pods use IRSA.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-ingress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-frontend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-ingress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+      ports:
+        - { protocol: TCP, port: 4000 }
+---
+# Backend and worker: database, cache, ClamAV, AWS APIs on 443 and SMTP submission.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [hrms-backend, hrms-worker]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+      ports:
+        - { protocol: TCP, port: 5432 }
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-clamav
+      ports:
+        - { protocol: TCP, port: 3310 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 587 }
+        - { protocol: TCP, port: 465 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jobs-egress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: database-job
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clamav
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-clamav
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [hrms-backend, hrms-worker]
+      ports:
+        - { protocol: TCP, port: 3310 }
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+      ports:
+        - { protocol: TCP, port: 443 } # freshclam signature downloads

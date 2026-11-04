@@ -1,0 +1,30 @@
+# AWS Load Balancer Controller. Same-origin routing must stay identical to dev/Caddyfile or sign-in
+# breaks. Requests for unknown hosts match no rule and get the ALB's default 404. /metrics is not
+# routed, so it stays inside the cluster. Host comes from BRAND_DOMAIN through the overlay.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hrms
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/load-balancer-attributes: routing.http.drop_invalid_header_fields.enabled=true,deletion_protection.enabled=true,idle_timeout.timeout_seconds=60
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    alb.ingress.kubernetes.io/healthcheck-path: /health/ready
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+spec:
+  ingressClassName: alb
+  rules:
+    - host: REPLACE_BRAND_DOMAIN
+      http:
+        paths:
+          - { path: /api, pathType: Prefix, backend: { service: { name: hrms-backend, port: { name: http } } } }
+          - { path: /health, pathType: Prefix, backend: { service: { name: hrms-backend, port: { name: http } } } }
+          - { path: /ready, pathType: Exact, backend: { service: { name: hrms-backend, port: { name: http } } } }
+          - { path: /brand, pathType: Prefix, backend: { service: { name: hrms-backend, port: { name: http } } } }
+          - { path: /, pathType: Prefix, backend: { service: { name: hrms-frontend, port: { name: http } } } }

@@ -1,0 +1,147 @@
+# Kustomize has no hooks and a Job's spec is immutable, so each release gets new Job names: the overlay
+# replaces RELEASE from its hrms-release ConfigMap. Argo CD sync waves run them in this order and wait
+# for each to finish before starting the apps, then prune the previous release's Jobs. Provision stays
+# out of initContainers so app pods never see the master credentials. See docs/RUNBOOK.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hrms-provision-RELEASE
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+  labels:
+    app.kubernetes.io/name: hrms-provision
+    app.kubernetes.io/component: database-job
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hrms-provision
+        app.kubernetes.io/component: database-job
+    spec:
+      restartPolicy: Never
+      serviceAccountName: hrms-jobs
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: provision
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["provision"]
+          envFrom:
+            - secretRef: { name: hrms-provision }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hrms-migrate-RELEASE
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+  labels:
+    app.kubernetes.io/name: hrms-migrate
+    app.kubernetes.io/component: database-job
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hrms-migrate
+        app.kubernetes.io/component: database-job
+    spec:
+      restartPolicy: Never
+      serviceAccountName: hrms-jobs
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["migrate"]
+          envFrom:
+            - secretRef: { name: hrms-migration }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hrms-bootstrap-RELEASE
+  annotations:
+    argocd.argoproj.io/sync-wave: "-8"
+  labels:
+    app.kubernetes.io/name: hrms-bootstrap
+    app.kubernetes.io/component: database-job
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hrms-bootstrap
+        app.kubernetes.io/component: database-job
+    spec:
+      restartPolicy: Never
+      serviceAccountName: hrms-jobs
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bootstrap
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["bootstrap"]
+          envFrom:
+            - configMapRef: { name: hrms-brand }
+            - secretRef: { name: hrms-migration }
+          env:
+            - { name: BOOTSTRAP_MODE, value: password }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }

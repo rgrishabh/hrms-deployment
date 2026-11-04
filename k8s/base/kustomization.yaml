@@ -1,0 +1,22 @@
+# One HRMS installation in its own namespace, with sync order for Argo CD. Not deployable alone: the
+# overlay supplies the hrms-app and hrms-brand ConfigMaps, the release id and real image digests.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hrms
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hrms
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - networkpolicies.yaml
+  - secretstore.yaml
+  - externalsecrets.yaml
+  - jobs.yaml
+  - backend.yaml
+  - worker.yaml
+  - frontend.yaml
+  - clamav.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - ingress.yaml
