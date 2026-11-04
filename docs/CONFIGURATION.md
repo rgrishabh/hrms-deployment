@@ -117,6 +117,8 @@ Requests in flight keep the steps they were created with. Moving down to a small
 | `DATA_ENCRYPTION_KEY` | Secret, dev only. Base64 of 32 bytes |
 | `KMS_KEY_ID`, `DATA_KEY_CIPHERTEXT` | Prod. The data key is decrypted with KMS at startup. Takes priority over `DATA_ENCRYPTION_KEY` |
 | `PROCESS_ROLE` | `api` or `worker`. Only the worker runs jobs and sends email |
+| `TRUST_PROXY` | Whose `X-Forwarded-For` to believe: `false`, a number of proxy hops in front of the app, or comma-separated proxy addresses or CIDRs. `true` means one hop |
+| `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE` | Sign-in attempts on one account per minute, from any address. Default 10 |
 | `STORAGE_DRIVER`, `STORAGE_PATH`, `AWS_S3_BUCKET`, `AWS_REGION`, `S3_ENDPOINT` | `S3_ENDPOINT` is for MinIO |
 | `CLAMAV_HOST`, `CLAMAV_PORT` | Upload malware scanning. Prod refuses to start without it when `FEATURE_DOCUMENTS` is on |
 
