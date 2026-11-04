@@ -120,7 +120,7 @@ This invalidates the old password and all sessions, unlocks the account, restore
 
 ## 7. Optional modules
 
-`ENABLED_MODULES` (Compose) or `enabled_modules` (Terraform). `default` means core HR plus web attendance, regularization, shifts, holidays, **leave** and self-service. Add `attendance.mobile`, `attendance.biometric` `expenses` (needs storage, docs/EXPENSES.md), `training` and `lab.competency` (docs/COMPETENCY.md), `core.policies` (docs/POLICIES.md) and/or `notifications.email` (needs `MAIL_TRANSPORT=smtp` and `SMTP_*`; see docs/NOTIFICATIONS.md).
+`ENABLED_MODULES` (Compose) or `enabled_modules` (Terraform). `default` means core HR plus web attendance, regularization, shifts, holidays, **leave** and self-service. Add `attendance.mobile`, `attendance.biometric` `expenses` (needs storage, docs/EXPENSES.md), `training` and `lab.competency` (docs/COMPETENCY.md), `core.policies` (docs/POLICIES.md), `notifications.email` (needs `MAIL_TRANSPORT=smtp` and `SMTP_*`; see docs/NOTIFICATIONS.md) and/or `notifications.sms` (needs `SMS_TRANSPORT=http` and `SMS_HTTP_*`, plus DLT templates entered in Settings → SMS; see the backend's docs/SMS.md; in Terraform the provider's auth header goes into the secret `hrms/sms-auth-header`). Further modules: `overtime`, `field_duty`, `travel` (needs `expenses`), `advances_loans` and `accounting_exports` (need `payroll`), `reports.advanced`.
 
 - Validated at startup. Unknown modules, modules not available in this release (payroll, expenses, …), or missing dependencies stop the process with a clear error.
 - A disabled module is hidden in the UI and its API returns `403 feature_unavailable`. Device ingestion for a disabled biometric module is refused too.

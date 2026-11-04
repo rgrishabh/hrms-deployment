@@ -146,6 +146,15 @@ resource "aws_secretsmanager_secret" "smtp_password" {
   tags                    = local.tags
 }
 
+# SMS provider auth header ("Name: value"): container only — set by an operator, never by Terraform.
+resource "aws_secretsmanager_secret" "sms_auth_header" {
+  name                    = "hrms/sms-auth-header"
+  description             = "SMS provider auth header (Name: value) for SMS_TRANSPORT=http. Set the value manually; Terraform never stores it."
+  kms_key_id              = aws_kms_key.main.arn
+  recovery_window_in_days = 30
+  tags                    = local.tags
+}
+
 resource "aws_secretsmanager_secret_version" "app" {
   for_each = {
     database_url           = "postgres://hrms_app:${random_password.db_app.result}@${local.db_host}:${local.db_port}/${local.db_name}"
