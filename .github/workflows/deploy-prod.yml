@@ -170,10 +170,9 @@ jobs:
             git -C client -c user.name=hrms-deploy-bot -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -qm "revert: failed deploy" -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             git -C client push -q origin HEAD:main
           fi
-      - name: Revert versions.env and alert
+      - name: Revert versions.env
         if: failure()
         env:
-          WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
           BOT_TOKEN: ${{ steps.bot.outputs.token }}
           EVENT: ${{ github.event_name }}
         run: |
@@ -190,5 +189,16 @@ jobs:
               pushed=0; for i in 1 2 3; do if git push origin HEAD:main; then pushed=1; break; fi; git pull --rebase -q origin main; sleep $((i * 3)); done; [ "$pushed" = 1 ] || { echo "::error::could not push to main (token lacks bypass of the main ruleset?)"; exit 1; }
             fi
           fi
+      # A separate step, so a revert that cannot push still alerts. Each channel is best effort and neither
+      # stops the other: AWS credentials do not exist yet if the run failed at signature verification.
+      - name: Alert
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+          TOPIC: arn:aws:sns:${{ matrix.customer.region }}:${{ matrix.customer.account_id }}:hrms-alarms
+          REGION: ${{ matrix.customer.region }}
+        run: |
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           msg="HRMS prod deploy FAILED for $SLUG ($run). The client's repository was put back if the release had been pinned. Migrations are not undone: see docs/RUNBOOK.md, Roll back."
-          [ -z "$WEBHOOK" ] || jq -n --arg t "$msg" '{text: $t}' | curl -fsS -X POST -H 'content-type: application/json' --data @- "$WEBHOOK" >/dev/null || true
+          [ -z "$WEBHOOK" ] || jq -n --arg t "$msg" '{text: $t}' | curl -fsS -X POST -H 'content-type: application/json' --data @- "$WEBHOOK" >/dev/null || echo "::warning::webhook alert failed"
+          aws sns publish --region "$REGION" --topic-arn "$TOPIC" --subject "HRMS prod deploy failed: $SLUG" --message "$msg" >/dev/null || echo "::warning::SNS alert failed"

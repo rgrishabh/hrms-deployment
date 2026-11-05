@@ -249,8 +249,8 @@ resource "aws_iam_role_policy_attachment" "load_balancer_controller" {
   policy_arn = aws_iam_policy.load_balancer_controller[0].arn
 }
 
-# The release pipeline: snapshot before migrating, and describe the cluster. It holds no secrets and
-# no data access; Argo CD applies the manifests from inside the cluster.
+# The release pipeline: snapshot before migrating, describe the cluster, alert on failure. It holds no
+# secrets and no data access; Argo CD applies the manifests from inside the cluster.
 resource "aws_iam_role" "release" {
   count                = var.create_release_role ? 1 : 0
   name                 = "hrms-release"
@@ -273,7 +273,7 @@ resource "aws_iam_role" "release" {
 
 resource "aws_iam_role_policy" "release" {
   count = var.create_release_role ? 1 : 0
-  name  = "snapshot-and-describe"
+  name  = "snapshot-describe-alert"
   role  = aws_iam_role.release[0].id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -290,6 +290,23 @@ resource "aws_iam_role_policy" "release" {
           Effect   = "Allow"
           Action   = ["rds:DescribeDBSnapshots", "rds:DescribeDBInstances"]
           Resource = "*"
+        },
+        # Failed deploys alert the same topic as the alarms. The name is fixed in modules/monitoring.
+        {
+          Sid      = "AlertOnFailedDeploy"
+          Effect   = "Allow"
+          Action   = ["sns:Publish"]
+          Resource = "arn:${local.partition}:sns:${data.aws_region.this.region}:${data.aws_caller_identity.this.account_id}:hrms-alarms"
+        },
+        # The topic uses the data key. Only through SNS, so this role cannot unwrap anything itself.
+        {
+          Sid      = "EncryptAlertThroughSns"
+          Effect   = "Allow"
+          Action   = ["kms:GenerateDataKey*", "kms:Decrypt"]
+          Resource = var.kms_key_arn
+          Condition = {
+            StringEquals = { "kms:ViaService" = "sns.${data.aws_region.this.region}.amazonaws.com" }
+          }
         },
       ],
       var.cluster_arn == null ? [] : [{
