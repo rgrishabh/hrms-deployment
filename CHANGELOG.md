@@ -9,6 +9,7 @@
 
 ### Added
 
+- Server access logs and a lifecycle on the Terraform state bucket, and `log_delivery = "s3"` on `modules/s3` for the log bucket (ADR-021).
 - `dev/` Compose stack, `k8s/`, `argocd/`, and `terraform/envs/prod-{low,mid,high}` with their modules.
 - Optional `platforms` input on `_app-publish.yml`. Empty now means both architectures for a release and `linux/amd64` otherwise, so the app repos need no change.
 - All deployment variables in the contract, in Compose and Kustomize: rate limits, previous keys, `TRUST_PROXY` hops, VAPID, `METRICS_TOKEN`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `WORKER_HEARTBEAT_FILE`.

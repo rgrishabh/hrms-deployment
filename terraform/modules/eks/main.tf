@@ -246,6 +246,7 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 }
 
 resource "aws_security_group" "alb" {
+  #checkov:skip=CKV2_AWS_5:Attached outside Terraform: the load balancer controller creates the ALB with this group, from the alb_security_group_id output through the Ingress annotation.
   name        = "${var.name}-alb"
   description = "Public entry to the ALB"
   vpc_id      = var.vpc_id

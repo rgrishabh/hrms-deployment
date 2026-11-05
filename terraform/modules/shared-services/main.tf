@@ -59,8 +59,41 @@ resource "aws_kms_key" "shared" {
 # ------------------------------------------------------------------ Terraform state
 # Each account may only read/write state under accounts/<its own account id>/.
 resource "aws_s3_bucket" "state" {
+  #checkov:skip=CKV2_AWS_62:Nothing consumes events from the state bucket; Terraform reads objects directly.
+  #checkov:skip=CKV_AWS_144:Accepted: state is versioned and can be rebuilt by import, and a second region would hold the generated passwords in another copy.
   bucket = "hrms-terraform-state-${local.account_id}"
   tags   = var.tags
+}
+
+# State holds generated passwords (docs/DEPLOYMENT.md), so who read it has to be on record.
+module "state_access_logs" {
+  source       = "../s3"
+  name_prefix  = "hrms-state-access-logs-"
+  log_delivery = "s3"
+}
+
+resource "aws_s3_bucket_logging" "state" {
+  bucket        = aws_s3_bucket.state.id
+  target_bucket = module.state_access_logs.bucket
+  target_prefix = "s3/${aws_s3_bucket.state.id}/"
+}
+
+# Old versions are the way back from a bad apply, so the newest ten stay however old they are.
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    id     = "housekeeping"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days           = 365
+      newer_noncurrent_versions = 10
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+  depends_on = [aws_s3_bucket_versioning.state]
 }
 
 resource "aws_s3_bucket_versioning" "state" {

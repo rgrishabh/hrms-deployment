@@ -305,6 +305,7 @@ resource "aws_autoscaling_group" "node" {
 # ---------------------------------------------------------------- load balancer
 #trivy:ignore:AWS-0053 This is the installation's public entry point; nodes stay on private subnets behind it.
 resource "aws_lb" "this" {
+  #checkov:skip=CKV2_AWS_28:Protected by the WAF: envs/prod-low passes alb_arn to modules/waf, associate_alb = true. The check cannot follow the association across modules.
   name                       = "${var.name}-alb"
   load_balancer_type         = "application"
   internal                   = false

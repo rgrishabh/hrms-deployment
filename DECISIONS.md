@@ -184,3 +184,13 @@ The one weakness is identity. Without IRSA, backend, worker and External Secrets
 **Decision.** (a). `_app-ci` signs nothing, so its calls may stay at a commit.
 
 **Reason.** (b) trusts any commit in this repository, including one on an unreviewed branch, so anyone who can push a branch could sign an image production accepts. `main` is mutable but protected by a ruleset, which is the property the identity exists to check. The cost is that the app repos do not pin this one call. `hrms-backend` D65 now records this and calls it at `main`. **Not tested:** the `job_workflow_ref` behaviour is what GitHub documents for OIDC claims, and nothing has run on GitHub. `docs/CUTOVER.md` has a `cosign verify` to run on the first develop image, before anything depends on it.
+
+## ADR-021: The state bucket logs access to its own log bucket, and stays in one region
+
+**Context.** Checkov on CI flagged the state bucket for access logging and cross-region replication. State holds the generated passwords (`docs/DEPLOYMENT.md`). Control Tower's trail records management events, not reads of objects.
+
+**Options.** Logging: (a) server access logs to a new bucket, (b) CloudTrail data events, (c) skip. Replication: (d) replicate, (e) skip with a reason.
+
+**Decision.** (a) and (e). The log bucket uses `modules/s3`, with SSE-S3, as `alb_logs` does.
+
+**Reason.** A read of this bucket is the one that gives away every password, so a skip would be hiding a real gap, and (a) costs next to nothing where (b) bills per event. Replicating would make another copy of those passwords, and state is versioned and can be rebuilt by import; losing a region costs time, not data. That is a judgement for the owner to overturn. Server access logs are delivered on a best-effort basis, so they are a record, not a guarantee.

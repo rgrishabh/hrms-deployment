@@ -234,6 +234,7 @@ resource "aws_db_instance" "read_replica" {
   ca_cert_identifier     = "rds-ca-rsa2048-g1"
 
   backup_retention_period = 0
+  copy_tags_to_snapshot   = true
   skip_final_snapshot     = true
 
   auto_minor_version_upgrade            = true

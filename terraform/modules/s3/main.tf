@@ -1,5 +1,6 @@
 # A private bucket: public access blocked, TLS only, versioned, encrypted. Log buckets use the same
 # module with a log_delivery value, because ALB logs support only SSE-S3 and CloudFront needs ACLs.
+# "s3" is for server access logs alone: SSE-S3 too, as delivery to a KMS bucket needs a grant in the key.
 variable "name_prefix" {
   description = "Bucket name prefix, for example hrms-documents-."
   type        = string
@@ -11,12 +12,12 @@ variable "kms_key_arn" {
 }
 
 variable "log_delivery" {
-  description = "none, alb or cloudfront. Anything but none makes this a log bucket, expiring after log_retention_days."
+  description = "none, alb, cloudfront or s3. Anything but none makes this a log bucket, expiring after log_retention_days."
   type        = string
   default     = "none"
   validation {
-    condition     = contains(["none", "alb", "cloudfront"], var.log_delivery)
-    error_message = "log_delivery must be none, alb or cloudfront."
+    condition     = contains(["none", "alb", "cloudfront", "s3"], var.log_delivery)
+    error_message = "log_delivery must be none, alb, cloudfront or s3."
   }
 }
 
@@ -64,6 +65,7 @@ data "aws_elb_service_account" "this" {
 
 locals {
   is_log_bucket = var.log_delivery != "none"
+  sse_s3        = contains(["alb", "s3"], var.log_delivery)
 }
 
 resource "aws_s3_bucket" "this" {
@@ -71,6 +73,7 @@ resource "aws_s3_bucket" "this" {
   #checkov:skip=CKV_AWS_144:Cross-region replication is an input, enabled on prod-high. Lower tiers accept single-region durability.
   #checkov:skip=CKV2_AWS_61:Lifecycle is configured in aws_s3_bucket_lifecycle_configuration.this below.
   #checkov:skip=CKV_AWS_18:Access logging is an input; log buckets do not log to themselves.
+  #checkov:skip=CKV_AWS_145:Only the log buckets with local.sse_s3 lack KMS, as ALB log delivery supports only SSE-S3. The encryption resource below picks KMS for every other bucket.
   bucket_prefix = var.name_prefix
   force_destroy = var.force_destroy
 }
@@ -84,6 +87,7 @@ resource "aws_s3_bucket_public_access_block" "this" {
 }
 
 resource "aws_s3_bucket_ownership_controls" "this" {
+  #checkov:skip=CKV2_AWS_65:ACLs stay on only for log_delivery = "cloudfront", as CloudFront standard logging writes with an ACL. Every other bucket is BucketOwnerEnforced. Public access is blocked on all.
   bucket = aws_s3_bucket.this.id
   rule {
     # CloudFront standard logging writes with an ACL, so that one bucket must allow them.
@@ -104,10 +108,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   rule {
     # ALB access logs can be delivered only to SSE-S3 buckets. Everything else uses the KMS key.
     apply_server_side_encryption_by_default {
-      sse_algorithm     = var.log_delivery == "alb" ? "AES256" : "aws:kms"
-      kms_master_key_id = var.log_delivery == "alb" ? null : var.kms_key_arn
+      sse_algorithm     = local.sse_s3 ? "AES256" : "aws:kms"
+      kms_master_key_id = local.sse_s3 ? null : var.kms_key_arn
     }
-    bucket_key_enabled = var.log_delivery != "alb"
+    bucket_key_enabled = !local.sse_s3
   }
 }
 

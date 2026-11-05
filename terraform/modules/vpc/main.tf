@@ -188,6 +188,7 @@ resource "aws_network_interface" "nat" {
 }
 
 resource "aws_eip" "nat_instance" {
+  #checkov:skip=CKV2_AWS_19:Attached through network_interface to the NAT instance's ENI; the check recognizes an instance or an association, not an ENI.
   count             = var.egress_mode == "nat_instance" ? 1 : 0
   domain            = "vpc"
   network_interface = aws_network_interface.nat[0].id

@@ -63,6 +63,7 @@ resource "aws_iam_account_password_policy" "this" {
 }
 
 resource "aws_guardduty_detector" "this" {
+  #checkov:skip=CKV2_AWS_3:This module runs in a member account, which cannot hold the organization configuration. Each account gets this detector, or enable_guardduty = false if a delegated admin manages it.
   count  = var.enable_guardduty ? 1 : 0
   enable = true
   tags   = var.tags

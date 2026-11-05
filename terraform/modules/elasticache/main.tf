@@ -77,6 +77,7 @@ resource "aws_elasticache_parameter_group" "this" {
 }
 
 resource "aws_elasticache_replication_group" "this" {
+  #checkov:skip=CKV2_AWS_50:Failover and Multi-AZ follow replica_count: 1 on prod-mid, 2 on prod-high. A group of one node has nothing to fail over to, so the default stays off.
   replication_group_id       = var.name
   description                = "HRMS config and lookup cache"
   engine                     = "redis"
