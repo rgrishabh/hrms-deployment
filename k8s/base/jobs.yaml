@@ -68,7 +68,7 @@ spec:
         app.kubernetes.io/component: database-job
     spec:
       restartPolicy: Never
-      serviceAccountName: hrms-jobs
+      serviceAccountName: hrms-migrate # code migrations read encrypted columns, so this one can unwrap the data key
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -83,6 +83,7 @@ spec:
           args: ["migrate"]
           envFrom:
             - secretRef: { name: hrms-migration }
+            - secretRef: { name: hrms-data-key }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }

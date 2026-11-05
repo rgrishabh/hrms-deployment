@@ -17,6 +17,7 @@ resources:
   - worker.yaml
   - frontend.yaml
   - clamav.yaml
+  - freshclam-check.yaml
   - hpa.yaml
   - pdb.yaml
   - ingress.yaml

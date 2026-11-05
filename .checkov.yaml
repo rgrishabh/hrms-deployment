@@ -11,7 +11,7 @@ skip-path:
   - k8s/policies/tests
   - environments/dev
 skip-check:
-  # Images run as fixed UIDs (backend 1000, frontend 101, ClamAV 100). They own files inside the images,
+  # Images run as fixed UIDs (backend 1000, frontend 101, ClamAV 1000). They own files inside the images,
   # and the Compose volumes depend on them. runAsNonRoot and Kyverno still block root.
   - CKV_K8S_40
   # The application reads configuration from the environment by design (docs/CONFIGURATION.md).

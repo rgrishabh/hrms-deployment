@@ -1,5 +1,5 @@
-# k3s has no IRSA here: backend and worker reach S3 and KMS with the node role through IMDS. Only these
-# two workloads may reach it; every other pod stays blocked by the default deny.
+# k3s has no IRSA here: these workloads reach AWS with the node role through IMDS. Only they may reach
+# it; every other pod stays blocked by the default deny.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,7 +11,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/name
         operator: In
-        values: [hrms-backend, hrms-worker]
+        values: [hrms-backend, hrms-worker, hrms-migrate, hrms-freshclam-check]
   policyTypes: [Egress]
   egress:
     - to:

@@ -47,6 +47,20 @@ metadata:
   annotations:
     eks.amazonaws.com/role-arn: $(v secrets_role_arn)
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-migrate
+  annotations:
+    eks.amazonaws.com/role-arn: $(v migrate_role_arn)
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-freshclam-check
+  annotations:
+    eks.amazonaws.com/role-arn: $(v freshclam_check_role_arn)
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

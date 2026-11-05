@@ -1,5 +1,6 @@
 # Upload malware scanning. The backend refuses to start in production without it while
-# FEATURE_DOCUMENTS is on. /init-unprivileged is the image's own non-root entrypoint.
+# FEATURE_DOCUMENTS is on. /init-unprivileged is the image's own non-root entrypoint. The -debian image
+# is the one with arm64; clamav/clamav is amd64 only (DECISIONS.md, ADR-014).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,9 +23,9 @@ spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
-        runAsUser: 100
-        runAsGroup: 101
-        fsGroup: 101
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
       topologySpreadConstraints:
         - maxSkew: 1
@@ -41,7 +42,7 @@ spec:
               app.kubernetes.io/name: hrms-clamav
       containers:
         - name: clamav
-          image: clamav/clamav:1.5.4@sha256:6d87c712e3391e13c1ba6e05dfb074d4b1ddb5a6834b23bb9da990d2a4ef042a
+          image: clamav/clamav-debian:1.5.4@sha256:c21aa18cc0a358678255a3dfb343a4555b58f71b97d7b869df8fdf7ea0a5b4b1
           imagePullPolicy: IfNotPresent
           command: ["/init-unprivileged"]
           ports:

@@ -20,6 +20,20 @@ metadata:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/hrms-external-secrets
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-migrate
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/hrms-migrate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hrms-freshclam-check
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/hrms-freshclam-check
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -114,6 +114,52 @@ spec:
       ports:
         - { protocol: TCP, port: 5432 }
 ---
+# KMS, for the data key. Migrate and the operator commands only: provision and bootstrap do not call AWS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migrate-egress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-migrate
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+# Asks clamd for its signature date, and tells CloudWatch.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: freshclam-check-egress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-freshclam-check
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-clamav
+      ports:
+        - { protocol: TCP, port: 3310 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+      ports:
+        - { protocol: TCP, port: 443 }
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -131,7 +177,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [hrms-backend, hrms-worker]
+                values: [hrms-backend, hrms-worker, hrms-freshclam-check]
       ports:
         - { protocol: TCP, port: 3310 }
   egress:
