@@ -23,7 +23,10 @@ missing "app.env flags are in the contract" "$T/kustomize-features" "$T/contract
 
 # Runtime wiring both deployment shapes must offer. Secret-backed values live in externalsecrets.yaml.
 printf '%s\n' ORG_MANAGEMENT_MODE MFA_AVAILABLE MFA_ENFORCED MFA_METHODS DATABASE_URL DB_READ_HOST STORAGE_DRIVER \
-  AWS_S3_BUCKET AWS_REGION CLAMAV_HOST CLAMAV_PORT SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD | sort -u > "$T/wiring"
+  AWS_S3_BUCKET AWS_REGION S3_ENDPOINT CLAMAV_HOST CLAMAV_PORT SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD \
+  TRUST_PROXY RATE_LIMIT_PER_MINUTE AUTH_RATE_LIMIT_PER_MINUTE AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE EXPORT_RATE_LIMIT_PER_MINUTE \
+  JOBS_INTERVAL_SECONDS METRICS_TOKEN OTEL_EXPORTER_OTLP_ENDPOINT VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY VAPID_SUBJECT \
+  KMS_KEY_ID DATA_KEY_CIPHERTEXT DATA_KEY_CIPHERTEXT_PREVIOUS | sort -u > "$T/wiring"
 sed -n 's/^ *\([A-Z][A-Z0-9_]*\): .*/\1/p' dev/docker-compose.yml | sort -u > "$T/compose-all"
 { sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' k8s/overlays/prod/app.env; sed -n 's/^ *\([A-Z][A-Z0-9_]*\): .*/\1/p' k8s/base/externalsecrets.yaml; } | sort -u > "$T/kustomize-all"
 missing "runtime wiring is in Compose" "$T/wiring" "$T/compose-all"

@@ -1,9 +1,11 @@
 name: Deploy prod
 # Runs when a change to environments/prod/<slug>/versions.env reaches main (a merged release PR).
 # Per customer, after the approval required by GitHub Environment prod-<slug>:
-#   verify cosign signatures -> deploy-prod.sh (snapshot, migrations as one-off ECS tasks, both
-#   services, circuit breaker, smoke test, restore previous task definitions on failure)
-# On failure the bot reverts that customer's versions.env so git matches what is running, and alerts.
+#   verify cosign signatures -> check the AWS account -> RDS snapshot -> pin the digests in the client's
+#   private repository (scripts/gitops-release.sh) -> Argo CD runs provision, migrate, bootstrap and the
+#   rollout from inside the cluster -> wait for the new versions -> smoke test.
+# On failure the client's repository and that customer's versions.env go back, and an alert goes out.
+# The schema does not go back: see docs/RUNBOOK.md, Roll back.
 on:
   push:
     branches: [main]
@@ -29,6 +31,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: m
         env:
           BEFORE: ${{ github.event.before }}
@@ -61,10 +64,13 @@ jobs:
     permissions:
       contents: write   # revert versions.env on failure
       packages: read    # read signatures from GHCR
-      id-token: write   # AWS OIDC
+      id-token: write   # AWS OIDC, for the snapshot
     env:
       SLUG: ${{ matrix.customer.slug }}
       OWNER: ${{ github.repository_owner }}
+      DOMAIN: ${{ matrix.customer.domain }}
+      OVERLAY: ${{ matrix.customer.overlay || 'overlay' }}
+      DB_INSTANCE: ${{ matrix.customer.db_instance || 'hrms-db' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -85,15 +91,19 @@ jobs:
           . "$f"
           for t in "$BACKEND_TAG" "$FRONTEND_TAG"; do [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$f: '$t' is not an immutable vX.Y.Z tag"; exit 1; }; done
           owner=${OWNER,,}
-          { echo "backend=ghcr.io/$owner/hrms-backend:$BACKEND_TAG"; echo "frontend=ghcr.io/$owner/hrms-frontend:$FRONTEND_TAG"; } >> "$GITHUB_OUTPUT"
+          {
+            echo "backend_tag=$BACKEND_TAG"; echo "frontend_tag=$FRONTEND_TAG"
+            echo "backend=ghcr.io/$owner/hrms-backend:$BACKEND_TAG"; echo "frontend=ghcr.io/$owner/hrms-frontend:$FRONTEND_TAG"
+          } >> "$GITHUB_OUTPUT"
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
-      - name: Verify signatures and pin digests
+      - name: Verify signatures and read digests
         id: verify
         env:
           GHCR_USER: ${{ secrets.GHCR_PULL_TOKEN && vars.GHCR_PULL_USER || github.actor }}
           GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || github.token }}
           BACKEND: ${{ steps.v.outputs.backend }}
           FRONTEND: ${{ steps.v.outputs.frontend }}
+          BACKEND_TAG: ${{ steps.v.outputs.backend_tag }}
         run: |
           printf '%s' "$GHCR_TOKEN" | cosign login ghcr.io -u "$GHCR_USER" --password-stdin
           verify() {  # signed by the shared publish workflow on main, built from the app's own repo
@@ -105,7 +115,9 @@ jobs:
           }
           bd=$(verify "$BACKEND" backend); fd=$(verify "$FRONTEND" frontend)
           [[ "$bd" == sha256:* && "$fd" == sha256:* ]] || { echo "::error::signature verification failed"; exit 1; }
-          { echo "backend=$BACKEND@$bd"; echo "frontend=$FRONTEND@$fd"; } >> "$GITHUB_OUTPUT"
+          # The same pair of images always gives the same release id, so a re-run changes nothing.
+          release="${BACKEND_TAG#v}.$(printf '%s%s' "$bd" "$fd" | sha256sum | cut -c1-7)"
+          { echo "backend=$bd"; echo "frontend=$fd"; echo "release=$release"; } >> "$GITHUB_OUTPUT"
           echo "Signatures verified: \`$BACKEND@$bd\`, \`$FRONTEND@$fd\`" >> "$GITHUB_STEP_SUMMARY"
       - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:
@@ -117,22 +129,59 @@ jobs:
         run: |
           actual=$(aws sts get-caller-identity --query Account --output text)
           [ "$actual" = "$EXPECTED" ] || { echo "::error::role is in account $actual, customers.json says $EXPECTED"; exit 1; }
-      - name: Deploy
+      - name: Snapshot before migrations
         env:
-          AWS_REGION: ${{ matrix.customer.region }}
-        run: scripts/deploy-prod.sh --backend "${{ steps.verify.outputs.backend }}" --frontend "${{ steps.verify.outputs.frontend }}"
+          RELEASE: ${{ steps.verify.outputs.release }}
+        run: |
+          snap="hrms-pre-${RELEASE//./-}-$(date -u +%Y%m%d%H%M%S)"
+          aws rds create-db-snapshot --db-instance-identifier "$DB_INSTANCE" --db-snapshot-identifier "$snap" --tags "Key=release,Value=$RELEASE" >/dev/null
+          aws rds wait db-snapshot-available --db-snapshot-identifier "$snap"
+          echo "Snapshot: \`$snap\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out the client's repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ matrix.customer.gitops_repo }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: client
+          fetch-depth: 0
+      - name: Pin the release
+        id: pin
+        env:
+          BACKEND: ${{ steps.verify.outputs.backend }}
+          FRONTEND: ${{ steps.verify.outputs.frontend }}
+          RELEASE: ${{ steps.verify.outputs.release }}
+          TAGS: backend ${{ steps.v.outputs.backend_tag }}, frontend ${{ steps.v.outputs.frontend_tag }}
+        run: |
+          scripts/gitops-release.sh client "$OVERLAY" "$BACKEND" "$FRONTEND" "$RELEASE" "release $RELEASE, $TAGS"
+      - name: Wait for the rollout, then smoke test
+        env:
+          BACKEND_TAG: ${{ steps.v.outputs.backend_tag }}
+          FRONTEND_TAG: ${{ steps.v.outputs.frontend_tag }}
+        run: scripts/k8s-wait-release.sh "https://$DOMAIN" "$BACKEND_TAG" "$FRONTEND_TAG"
 
+      - name: Put the client's repository back
+        if: failure() && steps.pin.outcome == 'success' && steps.pin.outputs.before != ''
+        env:
+          BEFORE: ${{ steps.pin.outputs.before }}
+        run: |
+          git -C client fetch -q origin main && git -C client checkout -q -B revert-tmp origin/main
+          git -C client checkout "$BEFORE" -- "$OVERLAY"
+          if [ -n "$(git -C client status --porcelain -- "$OVERLAY")" ]; then
+            git -C client -c user.name=hrms-deploy-bot -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -qm "revert: failed deploy" -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            git -C client push -q origin HEAD:main
+          fi
       - name: Revert versions.env and alert
         if: failure()
         env:
           WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
-          AWS_REGION: ${{ matrix.customer.region }}
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
+          EVENT: ${{ github.event_name }}
         run: |
           run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           f="environments/prod/$SLUG/versions.env"
           prev=$(git log -n 1 --format=%H "$GITHUB_SHA^" -- "$f" || true)
-          if [ -n "$prev" ] && [ "${{ github.event_name }}" = push ]; then
-            git remote set-url origin "https://x-access-token:${{ steps.bot.outputs.token }}@github.com/$GITHUB_REPOSITORY.git"
+          if [ -n "$prev" ] && [ "$EVENT" = push ]; then
+            git remote set-url origin "https://x-access-token:$BOT_TOKEN@github.com/$GITHUB_REPOSITORY.git"
             git config user.name "hrms-deploy-bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git fetch -q origin main && git checkout -q -B revert-tmp origin/main
             git show "$prev:$f" > "$f"
@@ -141,7 +190,5 @@ jobs:
               pushed=0; for i in 1 2 3; do if git push origin HEAD:main; then pushed=1; break; fi; git pull --rebase -q origin main; sleep $((i * 3)); done; [ "$pushed" = 1 ] || { echo "::error::could not push to main (token lacks bypass of the main ruleset?)"; exit 1; }
             fi
           fi
-          topic=$(aws ssm get-parameter --name /hrms/release/alarm_topic --query Parameter.Value --output text 2>/dev/null || true)
-          msg="HRMS prod deploy FAILED for $SLUG ($run). Services were restored to the previous task definitions if the rollout had started."
-          [ -z "$topic" ] || aws sns publish --topic-arn "$topic" --subject "HRMS deploy failed: $SLUG" --message "$msg" >/dev/null || true
+          msg="HRMS prod deploy FAILED for $SLUG ($run). The client's repository was put back if the release had been pinned. Migrations are not undone: see docs/RUNBOOK.md, Roll back."
           [ -z "$WEBHOOK" ] || jq -n --arg t "$msg" '{text: $t}' | curl -fsS -X POST -H 'content-type: application/json' --data @- "$WEBHOOK" >/dev/null || true
