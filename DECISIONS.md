@@ -36,7 +36,7 @@ Non-obvious choices in this repository. Newest last.
 
 **Decision.** `hrms-stack`, `envs/customer`, `deploy-prod.yml` and friends stay, and `docs/CUTOVER.md` Step 4 removes them. ECR and the build role are removed now.
 
-**Reason.** Nothing was ever applied, so there is no state to migrate. Prod workflows still reference the ECS stack, so it goes with them. Nothing references the ECR resources, and Trivy flagged their policy.
+**Reason.** Nothing was ever applied, so there is no state to migrate. `terraform.yml`, `infra-checks.yml` and Dependabot still reference the ECS stack, and `deploy-prod.yml` no longer does (ADR-016), so it goes with them, once a first client has proved the new path. Nothing references the ECR resources, and Trivy flagged their policy.
 
 ## ADR-005: Tier-low runs k3s on Graviton, not EKS
 
@@ -165,3 +165,22 @@ The one weakness is identity. Without IRSA, backend, worker and External Secrets
 
 **Reason.** It watches the outcome rather than the process: signatures clamd has actually loaded. The check's TCP and date steps have run against a real clamd. `put-metric-data` and the alarm have not, without an AWS account. It reads as an alarm until the first sync, so a new client's first email may be this one.
 
+## ADR-019: Failed deploys alert SNS as well as the webhook
+
+**Context.** The ECS deploy read a topic from an SSM parameter that the new tiers do not create, so a failed deploy reached only `NOTIFY_WEBHOOK_URL`, which is optional, and GitHub's own notification. The run already assumes `hrms-release`, and `modules/monitoring` names its topic `hrms-alarms` in every account.
+
+**Options.** (a) Record webhook-only. (b) Publish, building the ARN from `customers.json`, with no new variable or output. (c) Publish, with the ARN as a Terraform output copied into each environment.
+
+**Decision.** (b). A separate `Alert` step tries both channels, and a failure of one is a warning that does not stop the other.
+
+**Reason.** A dozen lines, and the topic already has the client's alarm subscribers. The topic is encrypted with the data key, whose `kms:Decrypt` would otherwise let this role unwrap the data key, so the grant carries `kms:ViaService` for SNS. **Limits:** nothing has run against AWS, so the `ViaService` condition is what to check first if the warning appears. A run that fails before the AWS credentials step has no way to publish, and only the webhook goes out. `rollback-prod.yml` has no AWS role by design (ADR-016) and stays webhook-only.
+
+## ADR-020: `_app-publish` is called at `main`; `_app-ci` may be pinned
+
+**Context.** `deploy-prod.yml` and `rollback-prod.yml` accept only images signed by `_app-publish.yml@refs/heads/main`. A keyless certificate's identity comes from the OIDC `job_workflow_ref`, which holds the ref as the caller wrote it, so a caller at a commit gets `_app-publish.yml@<sha>`. `hrms-backend` D65 moved its calls to a commit. `deploy-dev.yml` verifies no signature, so nothing would fail until the first production deploy.
+
+**Options.** (a) Call `_app-publish` at `main`. (b) Widen the two regular expressions to accept any 40-character commit.
+
+**Decision.** (a). `_app-ci` signs nothing, so its calls may stay at a commit.
+
+**Reason.** (b) trusts any commit in this repository, including one on an unreviewed branch, so anyone who can push a branch could sign an image production accepts. `main` is mutable but protected by a ruleset, which is the property the identity exists to check. The cost is that the app repos do not pin this one call. **Not tested:** the `job_workflow_ref` behaviour is what GitHub documents for OIDC claims, and nothing has run on GitHub. `docs/CUTOVER.md` has a `cosign verify` to run on the first develop image, before anything depends on it.

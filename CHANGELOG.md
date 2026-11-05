@@ -21,6 +21,8 @@
 - `deploy-prod.yml` and `rollback-prod.yml` pin digests in the client's repository rather than deploying to ECS. `customers.json` gains `gitops_repo`, and each `prod-<slug>` a `GITOPS_TOKEN`. `rollback-prod.yml` needs `schema: compatible`, and no longer has an AWS role.
 - ClamAV image to `clamav/clamav-debian`, UID 1000. MinIO images to Chainguard's, by digest.
 - `TRUST_PROXY` from `true` to hop counts: 1 in Compose, 2 in Kubernetes.
+- `/metrics` answers 404 at the public edge on every tier rather than the frontend's page.
+- A failed prod deploy also alerts the account's `hrms-alarms` SNS topic. The `hrms-release` role gains `sns:Publish` on it, and KMS use through SNS only.
 
 ### Fixed
 

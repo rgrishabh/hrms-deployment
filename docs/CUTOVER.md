@@ -9,6 +9,41 @@ This takes `dev.rgrishabh.in` from `environments/dev` to `dev/`, then removes EC
 - So the app images and the stack must change together, even though `docs/CONFIGURATION.md` is right that this repository merges first. If a new backend image reaches `develop` before the flip, its automatic deploy fails and rolls back. The site stays up, but the run is red and the tag is reverted.
 - `deploy-dev.yml` cannot be tested from a branch: the `dev` environment allows `main` only.
 
+## Merge order and the workflow pins
+
+The order is this repository, then `hrms-backend`, then `hrms-frontend`. The reason is one input and one signature.
+
+- **This repository first.** Backend `publish-develop.yml` and both frontend publish workflows pass `platforms`, which `_app-publish.yml` on `main` does not have until this branch merges. GitHub rejects a call with an undefined input, so an app merged first has no image to deploy.
+- **`_app-publish` must be called at `main`, not at a new commit.** `deploy-prod.yml:112` and `rollback-prod.yml:95` accept only the identity `_app-publish.yml@refs/heads/main`. The signing identity comes from the ref the caller wrote, so a call at a commit signs as `_app-publish.yml@<sha>`, and production refuses that image. `deploy-dev.yml` checks no signature, so dev would stay green and the first production deploy would be the first failure. See ADR-020.
+- **`_app-ci` may stay pinned.** It signs nothing, and it is identical on this branch and on `main`, so `92fef0b` keeps working. Moving it is optional.
+
+Steps:
+
+1. Do Step 0, then merge this repository (Step 1). Don't use the branch's commit as a pin: a squash or rebase merge leaves it out of `main`.
+2. Confirm the input reached `main`:
+   ```bash
+   git fetch origin && git show origin/main:.github/workflows/_app-publish.yml | grep -n 'platforms:'
+   ```
+3. In `hrms-backend`, on its revamp branch, change these two lines and leave the rest:
+   ```yaml
+   # .github/workflows/publish-develop.yml:29
+       uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
+   # .github/workflows/release.yml:41
+       uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
+   ```
+   Note the change in its decision D65, which says these calls are pinned.
+4. `hrms-frontend` needs no change: it already calls `_app-publish.yml@main`.
+5. Optional: move the two `_app-ci.yml` pins in `hrms-backend` (`ci.yml:17`, `publish-develop.yml:18`) to any commit on `main` at or after the merge, with `git rev-parse origin/main`.
+6. Merge the apps during Step 2, backend and then frontend, with *Deploy dev* disabled as that step says.
+7. **On the first published develop image, before anything relies on it,** check the identity. This is the only test of the pin before production:
+   ```bash
+   cosign verify ghcr.io/rgrishabh/hrms-backend:sha-<short> \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     --certificate-identity-regexp '^https://github.com/rgrishabh/hrms-deployment/\.github/workflows/_app-publish\.yml@refs/heads/main$' \
+     --certificate-github-workflow-repository rgrishabh/hrms-backend
+   ```
+   Repeat for `hrms-frontend`. If it fails, stop and don't cut a release. An image already signed with another identity cannot be fixed afterwards, and must be rebuilt.
+
 ## Step 0: before merging anything
 
 1. On the host, take a backup and copy it off the box. Use `bin/backup` in `/opt/hrms/dev`.
@@ -59,9 +94,20 @@ If the new backend's migrations already dropped something the old image reads, t
 
 ## Step 4: remove ECS and move prod to Kubernetes
 
+The ECS paths stay until here on purpose (ADR-004). Nothing was ever applied, so there is no state or running service to protect, but they are not yet dead: `terraform.yml` plans and applies `terraform/envs/customer`, `infra-checks.yml` and `terraform.yml` run the `hrms-stack` tests, Dependabot watches them, and `docs/TERRAFORM.md`, `docs/DEPLOYMENT.md` and `docs/OPERATIONS_RUNBOOK.md` describe them. The new prod workflows have never run, so the old paths go once a first client has proved them, and not before.
+
+Scanners skip these paths until then, so **the ECS stack has no Checkov or Trivy coverage, and its findings are not counted in any clean result:**
+
+| File | Setting | Paths |
+|---|---|---|
+| `.checkov.yaml` | `skip-path` | `terraform/modules/hrms-stack`, `terraform/envs/customer` |
+| `.trivy.yaml` | `scan.skip-dirs` | `terraform/modules/hrms-stack`, `terraform/envs/customer` |
+
+Both files also skip `environments/dev`, which goes in Step 3, and `k8s/policies/tests` and `k8s/build`, which stay.
+
 Before the first client on the new tiers:
 
 1. `deploy-prod.yml` and `rollback-prod.yml` already pin digests in the client's repository. They have never run. Give each customer `gitops_repo` in `customers.json` and a `GITOPS_TOKEN` in `prod-<slug>`, then prove them on a first client. `release-prod.yml` is unchanged: tags still live in `environments/prod/<slug>/versions.env`.
-2. Decide whether alerts on a failed deploy should also go to the account's SNS topic. The ECS version read the topic from an SSM parameter that the new tiers do not create, so today only `NOTIFY_WEBHOOK_URL` and GitHub's own notification tell anyone.
+2. A failed deploy alerts `NOTIFY_WEBHOOK_URL` and the account's `hrms-alarms` SNS topic (ADR-019). On the first client, confirm a failure reaches the topic's subscribers. A warning from the `Alert` step means it did not.
 3. Delete `terraform/modules/hrms-stack`, `terraform/envs/customer`, `terraform/customers`, `scripts/deploy-prod.sh`, `scripts/set-registry-credentials.sh`, and the ECS parts of `docs/TERRAFORM.md`, `docs/DEPLOYMENT.md` and `docs/OPERATIONS_RUNBOOK.md`.
-4. Reduce `terraform.yml` to what `infra-checks.yml` does not cover. Remove the skip paths for those directories from `.checkov.yaml` and `.trivy.yaml`.
+4. Reduce `terraform.yml` to what `infra-checks.yml` does not cover. Remove the two `hrms-stack` and `envs/customer` skips from `.checkov.yaml` and `.trivy.yaml`, as listed above, along with the `/terraform/envs/customer` entry in `.github/dependabot.yml`.

@@ -159,7 +159,7 @@ Works the same on the dev host, a laptop and an on-prem client. From `dev/` (`/o
 
 **Is the worker alive?** `bin/dc exec worker hrms worker-health` exits 0 when its heartbeat is fresh and a scheduler pass is not stuck. The health check runs the same command. It says why when it fails.
 
-**Metrics.** `/metrics` is not routed through Caddy. Read it from inside: `bin/dc exec backend wget -qO- --header "Authorization: Bearer $(sed -n 's/^METRICS_TOKEN=//p' .env)" http://127.0.0.1:4000/metrics`. A 200 from `http://localhost:8088/metrics` is only the frontend's page.
+**Metrics.** `/metrics` answers 404 at Caddy, and at the ALB on the Kubernetes tiers. Prometheus scrapes `backend:4000` (`hrms-backend:4000` in a cluster) directly. Read it from inside: `bin/dc exec backend wget -qO- --header "Authorization: Bearer $(sed -n 's/^METRICS_TOKEN=//p' .env)" http://127.0.0.1:4000/metrics`.
 
 **MinIO instead of the local volume.** In `.env`: `COMPOSE_PROFILES=local,minio`, `STORAGE_DRIVER=s3`, `S3_ENDPOINT=http://minio:9000`, `AWS_S3_BUCKET=hrms-documents`, and `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`. Then `make up`. The bucket is created for you, and backups include it. Documents already in the local volume do not move.
 
@@ -216,7 +216,7 @@ Argo CD then works through the sync waves:
 
 A failed Job stops the sync before the apps change.
 
-`deploy-prod.yml` does this for you when a `versions.env` change reaches `main`, after the `prod-<slug>` approval: it verifies the signatures, checks the account, takes the snapshot, commits the digests to the client's repository, waits for the new version and runs the smoke test. On failure it puts the client's repository and `versions.env` back and alerts `NOTIFY_WEBHOOK_URL`. Running it by hand instead, take the snapshot first:
+`deploy-prod.yml` does this for you when a `versions.env` change reaches `main`, after the `prod-<slug>` approval: it verifies the signatures, checks the account, takes the snapshot, commits the digests to the client's repository, waits for the new version and runs the smoke test. On failure it puts the client's repository and `versions.env` back, and alerts `NOTIFY_WEBHOOK_URL` and the account's `hrms-alarms` SNS topic. Running it by hand instead, take the snapshot first:
 
 ```bash
 aws rds create-db-snapshot --db-instance-identifier hrms-db --db-snapshot-identifier hrms-pre-1-2-0
