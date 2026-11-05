@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Starts the stack in order and keeps the one-time setup link out of the logs. Used by `make up` and
+# by deploy-dev.sh: postgres -> provision -> migrate -> bootstrap -> everything else.
+#   WAIT_TIMEOUT=seconds   how long to wait for health (default 600; the first ClamAV start is slow)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+log() { echo "[stack-up $(date -u +%H:%M:%S)] $*"; }
+fail() { echo "error: $*" >&2; exit 1; }
+
+[ -f .env ] || fail ".env missing. Run: make init"
+bin/check-brandenv
+
+dc() { bin/dc "$@"; }
+
+# The first version of this stack called the database service "db", on the same db-data volume. Two
+# postmasters on one data directory corrupt it, and neither can see the other's lock across
+# containers, so the old container must be gone before postgres starts.
+project=$(sed -n 's/^name: *//p' docker-compose.yml)
+old_db=$(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=db")
+if [ -n "$old_db" ]; then
+  log "removing the old db container; its volume is kept"
+  # shellcheck disable=SC2086 # one id per word
+  docker stop --time 60 $old_db >/dev/null
+  # shellcheck disable=SC2086
+  docker rm $old_db >/dev/null
+fi
+
+dc up -d --wait postgres
+
+# First administrator: runs before `up` so that the link it prints never reaches container logs.
+log "provision + migrate + bootstrap"
+dc run --rm --no-deps -T provision
+dc run --rm --no-deps -T migrate
+out=$(dc run --rm --no-deps -T bootstrap 2>&1) || { echo "$out" | grep -v 'setup#token=' >&2; fail "bootstrap failed"; }
+echo "$out" | grep '^{' | grep -v 'setup#token=' || true
+if echo "$out" | grep -q 'setup#token='; then
+  # The backend knows the hostname only. On the local profile the site is on HTTP_PORT, so add it here.
+  http_port=$(sed -n 's/^HTTP_PORT=//p' .env | tail -n 1)
+  link=$(echo "$out" | grep 'setup#token=')
+  if sed -n 's/^COMPOSE_PROFILES=//p' .env | tail -n 1 | grep -qw local; then
+    link=$(echo "$link" | sed -E "s#^http://([^/:]+)/#http://\1:${http_port:-8088}/#")
+  fi
+  (umask 077; echo "$link" > setup-link.txt)
+  log "first administrator created: one-time setup link saved to $PWD/setup-link.txt (mode 600). Read it, then delete it."
+fi
+
+dc up -d --remove-orphans --wait --wait-timeout "${WAIT_TIMEOUT:-600}"
+log "stack is up"

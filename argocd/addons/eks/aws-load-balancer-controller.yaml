@@ -1,0 +1,25 @@
+# Set the three values from `terraform output addon_values` in the client's copy.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 3.6.2
+    helm:
+      valuesObject:
+        clusterName: hrms
+        vpcId: REPLACE_VPC_ID
+        region: ap-south-1
+        serviceAccount:
+          name: aws-load-balancer-controller
+          annotations:
+            eks.amazonaws.com/role-arn: REPLACE_LOAD_BALANCER_CONTROLLER_ROLE_ARN
+  destination: { server: https://kubernetes.default.svc, namespace: kube-system }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true]

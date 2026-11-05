@@ -66,7 +66,7 @@ jobs:
           # Best-effort link to the dev deployment that ran this commit's image.
           short="sha-${SHA::7}"; dev=""
           if [ -n "$SHA" ]; then
-            c=$(git log --format=%H -S "$short" -- environments/dev/versions.env | tail -1)
+            c=$(git log --format=%H -S "$short" -- environments/dev/versions.env dev/versions.env | tail -1)
             [ -n "$c" ] && dev=$(git log -1 --format=%B "$c" | sed -n 's/^Run: //p')
           fi
           {

@@ -1,0 +1,84 @@
+# Runs scheduled jobs and sends email. Runs are claimed in the database, so extra replicas are safe
+# but do not scale with traffic, which is why this has no HPA. No port, so its probes read a heartbeat.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hrms-worker
+  labels:
+    app.kubernetes.io/name: hrms-worker
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hrms-worker
+    spec:
+      serviceAccountName: hrms-worker
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-worker
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-worker
+      containers:
+        - name: worker
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["worker"]
+          envFrom:
+            - configMapRef: { name: hrms-app }
+            - configMapRef: { name: hrms-brand }
+            - secretRef: { name: hrms-runtime }
+            - secretRef: { name: hrms-cache, optional: true } # no Redis on tier-low; the app reads the database
+          env:
+            - { name: PROCESS_ROLE, value: worker }
+            - { name: DATABASE_POOL_MAX, value: "5" }
+            - { name: WORKER_HEARTBEAT_FILE, value: /tmp/hrms-worker-heartbeat.json }
+            - { name: METRICS_TOKEN, value: "" } # API only: empty counts as unset, so the worker never holds it
+          # No port: the worker writes a heartbeat file, and this fails when it is stale or a pass is stuck.
+          readinessProbe:
+            exec: { command: [/usr/local/bin/hrms, worker-health] }
+            periodSeconds: 30
+            timeoutSeconds: 10
+          startupProbe:
+            exec: { command: [/usr/local/bin/hrms, worker-health] }
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec: { command: [/usr/local/bin/hrms, worker-health] }
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: brand, mountPath: /brand, readOnly: true }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
+        - name: brand
+          configMap: { name: hrms-brand-files }

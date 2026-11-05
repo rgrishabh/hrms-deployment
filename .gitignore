@@ -16,5 +16,19 @@ terraform/modules/**/.terraform.lock.hcl
 # Compose installation runtime data
 environments/*/backups/
 environments/*/setup-link.txt
+dev/backups/
+dev/setup-link.txt
+dev/demo-credentials.txt
+dev/.brandenv
+dev/docker-compose.override.yml
+
+
+# Per-client values never belong in this public repository
+*.tfvars
+!terraform/customers/_template.tfvars
+!terraform/customers/staging.tfvars
+!*.tfvars.example
+*.auto.tfvars
+k8s/build/
 *.dump
 *.dump.sha256

@@ -1,6 +1,6 @@
 name: Load dev demo data
 # Manual only. Fills the dev installation with SYNTHETIC demo data (a 60-person testing laboratory and
-# 10 persona logins) by running environments/dev/bin/demo-data on the dev host.
+# 10 persona logins) by running bin/demo-data from the active stack (DEV_STACK_DIR) on the dev host.
 # - The backend refuses when any real (non-demo) employee exists and is a no-op when demo data is present.
 # - The logins and password are written on the host to /opt/hrms/dev/demo-credentials.txt (mode 600);
 #   they are never printed to this log. Read them with:  ssh <user>@<host> 'cat /opt/hrms/dev/demo-credentials.txt'
@@ -20,6 +20,7 @@ concurrency:
 
 env:
   DEPLOY_DIR: /opt/hrms/dev
+  STACK_DIR: ${{ vars.DEV_STACK_DIR || 'environments/dev' }}
 
 jobs:
   demo:
@@ -52,8 +53,9 @@ jobs:
       - name: Sync the compose file and script
         run: |
           # shellcheck disable=SC2029
-          scp -q environments/dev/docker-compose.yml "dev:$DEPLOY_DIR/docker-compose.yml"
-          scp -q environments/dev/bin/demo-data "dev:$DEPLOY_DIR/bin/demo-data"
+          case "$STACK_DIR" in environments/dev|dev) ;; *) echo "::error::DEV_STACK_DIR must be environments/dev or dev (got '$STACK_DIR')"; exit 1 ;; esac
+          scp -q "$STACK_DIR/docker-compose.yml" "dev:$DEPLOY_DIR/docker-compose.yml"
+          scp -q "$STACK_DIR/bin/demo-data" "dev:$DEPLOY_DIR/bin/demo-data"
           ssh dev "chmod 750 $DEPLOY_DIR/bin/demo-data"
 
       - name: Load demo data (credentials stay on the host)

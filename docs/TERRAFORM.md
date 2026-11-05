@@ -1,5 +1,7 @@
 # Infrastructure: one AWS account per customer
 
+> **Parts of this page describe the ECS design, which was never applied and is removed in [CUTOVER.md](CUTOVER.md).** The new tiers are in [ARCHITECTURE.md](ARCHITECTURE.md), and `terraform/envs/prod-*`. The ECR registry and build role mentioned here were removed.
+
 > **Status: written and statically validated, never applied.** Every module and root passes `terraform validate` and `fmt`, and `modules/hrms-stack/tests/` runs offline plan/apply tests with mock providers (`terraform test`): container configuration, secret scoping, ALB host rules, input validation. No `plan` or `apply` has been run against a real AWS account yet. The first real deployment (staging) is when this gets proven. Expect fixes there.
 
 ## Layout

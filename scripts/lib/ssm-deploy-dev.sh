@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Optional dev deploy over AWS SSM Run Command (no inbound SSH). Called by deploy-dev.yml with AWS
-# credentials from OIDC. Ships environments/dev as a bundle via S3, passes .env and the GHCR token
+# credentials from OIDC. Ships the active stack as a bundle via S3, passes .env and the GHCR token
 # through SSM SecureString parameters (deleted afterwards), runs deploy-dev.sh on the instance.
-# Env: BUCKET, INSTANCE, ENV_FILE, GHCR_USER, GHCR_TOKEN, ROLLBACK=1 (optional)
+# Env: BUCKET, INSTANCE, ENV_FILE, GHCR_USER, GHCR_TOKEN, STACK_DIR, BRANDENV, ROLLBACK=1 (optional)
 # Arg: path of the previous versions.env (for rollback on the host)
 set -euo pipefail
 PREV=${1:?previous versions.env path required}
@@ -12,8 +12,10 @@ KEY="hrms-dev/bundle-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}.tgz"
 export AWS_PAGER=""
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; aws ssm delete-parameter --name /hrms/dev/ghcr-token >/dev/null 2>&1 || true' EXIT
 
-cp -R environments/dev "$TMP/dev"; rm -f "$TMP/dev/.env.example"
-cp scripts/deploy-dev.sh "$TMP/dev/deploy-dev.sh"; cp scripts/bootstrap-ec2.sh "$TMP/dev/bootstrap-ec2.sh"; cp "$PREV" "$TMP/dev/versions.prev.env"
+cp -R "${STACK_DIR:-environments/dev}" "$TMP/dev"; rm -rf "$TMP/dev/.env.example" "$TMP/dev/.brandenv.example" "$TMP/dev/tests"
+if [ -n "${BRANDENV:-}" ]; then printf '%s\n' "$BRANDENV" > "$TMP/dev/.brandenv"; fi
+[ -f "$TMP/dev/deploy-dev.sh" ] || cp scripts/deploy-dev.sh "$TMP/dev/deploy-dev.sh"
+cp scripts/bootstrap-ec2.sh "$TMP/dev/bootstrap-ec2.sh"; cp "$PREV" "$TMP/dev/versions.prev.env"
 tar -C "$TMP/dev" -czf "$TMP/bundle.tgz" .
 aws s3 cp "$TMP/bundle.tgz" "s3://$BUCKET/$KEY" --sse aws:kms --only-show-errors
 aws ssm put-parameter --name /hrms/dev/env --type SecureString --overwrite --value "$ENV_FILE" >/dev/null

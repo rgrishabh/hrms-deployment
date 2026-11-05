@@ -1,0 +1,47 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-mutable-images
+  annotations:
+    policies.kyverno.io/title: Images must be digest-pinned
+    policies.kyverno.io/description: Blocks the latest tag and untagged images everywhere, and requires a digest on HRMS workloads.
+spec:
+  background: true
+  rules:
+    - name: no-latest-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system]
+      validate:
+        failureAction: Enforce
+        message: "The latest tag and untagged images are not allowed."
+        foreach:
+          - list: request.object.spec.[containers, initContainers, ephemeralContainers][]
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: AnyIn
+                    value: ["*:latest", "*:latest@*"]
+    - name: hrms-requires-digest
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [hrms]
+      validate:
+        failureAction: Enforce
+        message: "HRMS images must be pinned by digest (image@sha256:...)."
+        foreach:
+          - list: request.object.spec.[containers, initContainers, ephemeralContainers][]
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: AnyNotIn
+                    value: ["*@sha256:*"]

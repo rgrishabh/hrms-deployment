@@ -263,30 +263,3 @@ run "rejects_too_many_domains_for_alb_rules" {
   expect_failures = [var.domains]
 }
 
-run "sms_auth_header_only_from_secrets_manager" {
-  command = apply
-  variables {
-    enabled_modules = ["default", "notifications.sms"]
-    sms             = { transport = "http", http_url = "https://sms.example.com/send", body = "{\"to\":\"{{to}}\",\"text\":\"{{message}}\"}", sender_id = "ACMELB" }
-  }
-  assert {
-    condition     = contains([for s in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].secrets : s.name], "SMS_HTTP_AUTH_HEADER")
-    error_message = "SMS_HTTP_AUTH_HEADER must come from Secrets Manager."
-  }
-  assert {
-    condition     = !contains([for e in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : e.name], "SMS_HTTP_AUTH_HEADER")
-    error_message = "SMS_HTTP_AUTH_HEADER must never be a plain environment value."
-  }
-  assert {
-    condition     = contains([for e in jsondecode(aws_ecs_task_definition.api.container_definitions)[0].environment : "${e.name}=${e.value}"], "SMS_TRANSPORT=http")
-    error_message = "SMS_TRANSPORT not passed to the container."
-  }
-}
-
-run "sms_needs_https" {
-  command = plan
-  variables {
-    sms = { transport = "http", http_url = "http://sms.example.com/send", body = "x" }
-  }
-  expect_failures = [var.sms]
-}

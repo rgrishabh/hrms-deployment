@@ -1,5 +1,7 @@
 # Backup and restore
 
+> **Parts of this page describe the ECS design, which was never applied and is removed in [CUTOVER.md](CUTOVER.md).** The new tiers are in [ARCHITECTURE.md](ARCHITECTURE.md), and `terraform/envs/prod-*`. The ECR registry and build role mentioned here were removed.
+
 > **Status:** a **local** backup → restore drill was performed on 2026-11-03 with `scripts/backup.sh` / `scripts/restore.sh` (PostgreSQL 17, synthetic seed data). Results: checksum verified; row counts identical for tenants, employees, attendance events/daily, audit logs and migrations; restore into a non-empty target refused; `migrate` was a no-op on the restored copy; RLS still enforced for `hrms_app`. The drill found and fixed a real defect: `FORCE ROW LEVEL SECURITY` made `pg_dump` fail as the owner (migration 004, DECISIONS D15). **No AWS/RDS restore has been rehearsed, and no RPO/RTO has been approved.** Both are required before go-live.
 
 ## Proposed objectives (to be approved by the business)

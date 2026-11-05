@@ -1,0 +1,159 @@
+#!/bin/bash
+# First boot of a k3s node. Safe to lose: a replacement node runs this again and Argo CD restores
+# everything from git. The k3s binary is checked against a pinned hash, not fetched and trusted.
+set -euo pipefail
+
+dnf install -y jq
+curl -fsSL -o /usr/local/bin/k3s "https://github.com/k3s-io/k3s/releases/download/${replace(k3s_version, "+", "%2B")}/k3s-arm64"
+echo "${k3s_sha256}  /usr/local/bin/k3s" | sha256sum -c -
+chmod 755 /usr/local/bin/k3s
+
+cat > /etc/sysctl.d/90-kubelet.conf <<'SYSCTL'
+vm.panic_on_oom = 0
+vm.overcommit_memory = 1
+kernel.panic = 10
+kernel.panic_on_oops = 1
+SYSCTL
+sysctl --system
+
+mkdir -p /etc/rancher/k3s /var/lib/rancher/k3s/server/manifests
+cat > /etc/rancher/k3s/config.yaml <<'CONFIG'
+write-kubeconfig-mode: "0600"
+secrets-encryption: true
+protect-kernel-defaults: true
+disable:
+  - servicelb
+kube-apiserver-arg:
+  - anonymous-auth=false
+CONFIG
+
+# Traefik on a NodePort behind the ALB. TLS ends at the ALB, whose forwarded headers are trusted.
+cat > /var/lib/rancher/k3s/server/manifests/traefik-config.yaml <<'MANIFEST'
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      type: NodePort
+    ports:
+      web:
+        nodePort: ${node_port}
+      websecure:
+        expose:
+          default: false
+    additionalArguments:
+      - --ping.entrypoint=web
+      - --entryPoints.web.forwardedHeaders.trustedIPs=10.0.0.0/8
+MANIFEST
+
+# Argo CD, then the one Application that makes it deploy this client's overlay.
+cat > /var/lib/rancher/k3s/server/manifests/argocd.yaml <<'MANIFEST'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: argocd
+  namespace: kube-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argo-cd
+  version: "${argocd_chart_version}"
+  targetNamespace: argocd
+  valuesContent: |-
+    dex:
+      enabled: false
+    notifications:
+      enabled: false
+    configs:
+      params:
+        server.insecure: true
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: hrms-gitops-root
+  namespace: kube-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argocd-apps
+  version: "2.0.7"
+  targetNamespace: argocd
+  valuesContent: |-
+    applications:
+      hrms-addons:
+        namespace: argocd
+        project: default
+        source:
+          repoURL: https://github.com/rgrishabh/hrms-deployment.git
+          targetRevision: ${deployment_ref}
+          path: argocd/addons/common
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: argocd
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+      hrms-root:
+        namespace: argocd
+        project: default
+        source:
+          repoURL: ${gitops_repo_url}
+          targetRevision: ${gitops_repo_revision}
+          path: ${gitops_overlay_path}
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: hrms
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=false
+            - SkipDryRunOnMissingResource=true
+          retry:
+            limit: 30
+            backoff:
+              duration: 1m
+              factor: 2
+              maxDuration: 10m
+MANIFEST
+
+cat > /etc/systemd/system/k3s.service <<'UNIT'
+[Unit]
+Description=k3s
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/k3s server
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now k3s
+
+# Optional credentials for a private overlay repository. Applied after k3s is up, never via user data.
+region=$(TOKEN=$(curl -sX PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token); curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+if repo=$(aws secretsmanager get-secret-value --region "$region" --secret-id hrms/argocd-repo --query SecretString --output text 2>/dev/null); then
+  until /usr/local/bin/k3s kubectl get namespace argocd >/dev/null 2>&1; do sleep 5; done
+  printf '%s' "$repo" | jq '{apiVersion: "v1", kind: "Secret", metadata: {name: "hrms-repo", namespace: "argocd", labels: {"argocd.argoproj.io/secret-type": "repository"}}, stringData: (. + {type: "git"})}' | /usr/local/bin/k3s kubectl apply -f -
+fi

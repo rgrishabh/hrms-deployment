@@ -93,24 +93,6 @@ variable "mail" {
   }
 }
 
-variable "sms" {
-  description = "SMS provider (module notifications.sms). The auth header (API key) is NOT a variable: Terraform creates the empty secret hrms/sms-auth-header and an operator sets its value before enabling SMS."
-  type = object({
-    transport     = optional(string, "disabled") # disabled | http
-    http_url      = optional(string)
-    content_type  = optional(string, "json") # json | form
-    body          = optional(string)         # request body with {{to}} {{message}} {{template_id}} {{sender_id}} {{entity_id}}
-    sender_id     = optional(string)         # DLT header
-    dlt_entity_id = optional(string)
-  })
-  default = {}
-  validation {
-    condition = contains(["disabled", "http"], var.sms.transport) && contains(["json", "form"], var.sms.content_type) && (var.sms.transport != "http" || (
-    var.sms.http_url != null && startswith(coalesce(var.sms.http_url, "-"), "https://") && var.sms.body != null))
-    error_message = "sms.transport must be disabled or http; http needs an https http_url and a body; content_type is json or form."
-  }
-}
-
 variable "enabled_modules" {
   description = "Modules for this installation (ENABLED_MODULES). \"default\" = the standard set; add e.g. \"attendance.biometric\". Validated by the application at startup."
   type        = list(string)

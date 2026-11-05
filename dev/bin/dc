@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# docker compose for this installation: always with .env (settings, secrets) and versions.env (tags).
+# .brandenv is read by the Compose file itself, which stops if it is missing.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec docker compose --env-file .env --env-file versions.env "$@"

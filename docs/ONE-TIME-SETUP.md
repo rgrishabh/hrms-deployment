@@ -33,7 +33,7 @@ the **App ID**, and generate a **private key** (`.pem`).
 
 | Record | Value |
 |---|---|
-| `dev.rgrishabh.in` A | `13.211.243.2` (the dev EC2) |
+| `dev.rgrishabh.in` A | `<dev-host>` (the dev EC2) |
 | each customer domain | CNAME to the ALB DNS name (Terraform output `alb_dns_name`), or Route 53 alias when `route53_zone_id` is set |
 
 The EC2 security group must allow 80 and 443 from anywhere (Let's Encrypt), and 22 from GitHub Actions (or use the SSM path).
@@ -52,7 +52,7 @@ Keep a copy in your password manager: `DATA_ENCRYPTION_KEY` cannot be recovered 
 
 ```bash
 cd ~/hrms-repos/hrms-deployment
-DEV_EC2_HOST=13.211.243.2 DEV_EC2_USER=ubuntu DEV_SITE=dev.rgrishabh.in \
+DEV_EC2_HOST=<dev-host> DEV_EC2_USER=ubuntu DEV_SITE=dev.rgrishabh.in \
 DEV_EC2_SSH_KEY_FILE=~/.ssh/<dev-key> DEV_ENV_FILE_PATH=environments/dev/.env \
 DEPLOY_APP_ID=<id> DEPLOY_APP_PRIVATE_KEY_FILE=~/Downloads/<app>.pem \
   scripts/setup-github.sh                 # or DEPLOY_REPO_TOKEN=<pat> instead of the two App lines
@@ -87,7 +87,7 @@ Nothing long-lived is stored on the dev host.
 1. If the old demo stack still holds ports 80/443 on the host, stop it: `cd /opt/hrms/demo && docker compose down` (volumes are kept).
 2. Push something to `develop` in **both** app repos (or run *Publish (develop)* manually). The second image triggers the first deploy.
 3. The first deploy creates the administrator and writes the one-time setup link on the host:
-   `ssh ubuntu@13.211.243.2 'cat /opt/hrms/dev/setup-link.txt && rm /opt/hrms/dev/setup-link.txt'`
+   `ssh ubuntu@<dev-host> 'cat /opt/hrms/dev/setup-link.txt && rm /opt/hrms/dev/setup-link.txt'`
 
 ## 8. Production (per customer, first time)
 
