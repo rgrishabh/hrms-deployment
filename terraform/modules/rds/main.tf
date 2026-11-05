@@ -136,6 +136,14 @@ resource "aws_db_parameter_group" "this" {
     name  = "idle_in_transaction_session_timeout"
     value = "60000"
   }
+  # The only extensions the migrations create (036 needs btree_gist). All are trusted, so the schema owner
+  # can create them without rds_superuser. pending-reboot is accepted whichever way RDS applies this one,
+  # and a new instance starts with it.
+  parameter {
+    name         = "rds.allowed_extensions"
+    value        = "btree_gist,pg_trgm,pgcrypto"
+    apply_method = "pending-reboot"
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -257,6 +265,11 @@ output "port" {
 output "read_address" {
   description = "Empty without a read replica, in which case the app reads from the primary."
   value       = var.read_replica ? aws_db_instance.read_replica[0].address : ""
+}
+
+output "read_identifier" {
+  description = "Empty without a read replica."
+  value       = var.read_replica ? aws_db_instance.read_replica[0].identifier : ""
 }
 
 output "security_group_id" {

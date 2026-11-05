@@ -110,11 +110,37 @@ data "aws_iam_policy_document" "secrets" {
   }
 }
 
+# Migrate and the operator commands: unwrap the data key, and no access to documents.
+data "aws_iam_policy_document" "migrate" {
+  statement {
+    sid       = "UnwrapDataKey"
+    actions   = ["kms:Decrypt"]
+    resources = [var.kms_key_arn]
+  }
+}
+
+# The signature age metric. PutMetricData has no resource-level permissions, so the namespace is the limit.
+data "aws_iam_policy_document" "metrics" {
+  #checkov:skip=CKV_AWS_356:cloudwatch:PutMetricData supports no resource ARN. The condition limits it to one namespace.
+  statement {
+    sid       = "PublishHrmsMetrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["HRMS"]
+    }
+  }
+}
+
 data "aws_iam_policy_document" "irsa" {
   for_each = var.irsa_enabled ? {
     backend          = "system:serviceaccount:${var.namespace}:hrms-backend"
     worker           = "system:serviceaccount:${var.namespace}:hrms-worker"
     external-secrets = "system:serviceaccount:${var.namespace}:hrms-secrets"
+    migrate          = "system:serviceaccount:${var.namespace}:hrms-migrate"
+    freshclam-check  = "system:serviceaccount:${var.namespace}:hrms-freshclam-check"
     load-balancer    = "system:serviceaccount:kube-system:aws-load-balancer-controller"
   } : {}
   statement {
@@ -173,6 +199,32 @@ resource "aws_iam_role_policy" "external_secrets" {
   name   = "read-secrets"
   role   = aws_iam_role.external_secrets[0].id
   policy = data.aws_iam_policy_document.secrets.json
+}
+
+resource "aws_iam_role" "migrate" {
+  count              = var.irsa_enabled ? 1 : 0
+  name               = "hrms-migrate${var.role_suffix}"
+  assume_role_policy = data.aws_iam_policy_document.irsa["migrate"].json
+}
+
+resource "aws_iam_role_policy" "migrate" {
+  count  = var.irsa_enabled ? 1 : 0
+  name   = "unwrap-data-key"
+  role   = aws_iam_role.migrate[0].id
+  policy = data.aws_iam_policy_document.migrate.json
+}
+
+resource "aws_iam_role" "freshclam_check" {
+  count              = var.irsa_enabled ? 1 : 0
+  name               = "hrms-freshclam-check${var.role_suffix}"
+  assume_role_policy = data.aws_iam_policy_document.irsa["freshclam-check"].json
+}
+
+resource "aws_iam_role_policy" "freshclam_check" {
+  count  = var.irsa_enabled ? 1 : 0
+  name   = "publish-metric"
+  role   = aws_iam_role.freshclam_check[0].id
+  policy = data.aws_iam_policy_document.metrics.json
 }
 
 # AWS Load Balancer Controller. The JSON is the project's published policy for chart 3.6.2, unchanged.
@@ -256,6 +308,18 @@ output "app_policy_json" {
 
 output "secrets_policy_json" {
   value = data.aws_iam_policy_document.secrets.json
+}
+
+output "metrics_policy_json" {
+  value = data.aws_iam_policy_document.metrics.json
+}
+
+output "migrate_role_arn" {
+  value = var.irsa_enabled ? aws_iam_role.migrate[0].arn : ""
+}
+
+output "freshclam_check_role_arn" {
+  value = var.irsa_enabled ? aws_iam_role.freshclam_check[0].arn : ""
 }
 
 output "backend_role_arn" {

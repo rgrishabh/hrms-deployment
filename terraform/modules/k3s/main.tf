@@ -94,6 +94,10 @@ variable "secrets_policy_json" {
   type = string
 }
 
+variable "metrics_policy_json" {
+  type = string
+}
+
 variable "deletion_protection" {
   type    = bool
   default = true
@@ -211,6 +215,12 @@ resource "aws_iam_role_policy" "secrets" {
   name   = "read-secrets"
   role   = aws_iam_role.node.id
   policy = var.secrets_policy_json
+}
+
+resource "aws_iam_role_policy" "metrics" {
+  name   = "publish-metric"
+  role   = aws_iam_role.node.id
+  policy = var.metrics_policy_json
 }
 
 resource "aws_iam_instance_profile" "node" {

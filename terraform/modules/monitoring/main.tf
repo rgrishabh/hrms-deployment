@@ -31,6 +31,29 @@ variable "db_max_connections" {
   default = 100
 }
 
+variable "db_replica_enabled" {
+  description = "Alarm on replication lag. A plain bool, because the identifier may be unknown at plan time."
+  type        = bool
+  default     = false
+}
+
+variable "db_replica_identifier" {
+  type    = string
+  default = ""
+}
+
+variable "db_replica_lag_seconds" {
+  description = "Reports read from the replica, so this is how stale a report may be before someone is told."
+  type        = number
+  default     = 300
+}
+
+variable "clamav_signature_max_age_hours" {
+  description = "ClamAV publishes several updates a day, so this much age means freshclam has stopped."
+  type        = number
+  default     = 48
+}
+
 variable "alb_enabled" {
   description = "Create the ALB alarms. A plain bool, because the suffix may be unknown at plan time."
   type        = bool
@@ -78,6 +101,12 @@ locals {
       dims      = local.db_dim, desc = "Database connections above the expected maximum"
     }
   }
+  replica_alarms = var.db_replica_enabled ? {
+    db-replica-lag = {
+      namespace = "AWS/RDS", metric = "ReplicaLag", stat = "Maximum", threshold = var.db_replica_lag_seconds, op = "GreaterThanThreshold", periods = 3,
+      dims      = { DBInstanceIdentifier = var.db_replica_identifier }, desc = "Read replica is behind the primary; reports are stale"
+    }
+  } : {}
   alb_dim = { LoadBalancer = var.alb_arn_suffix }
   alb_alarms = var.alb_enabled ? {
     alb-5xx = {
@@ -99,7 +128,7 @@ locals {
       dims      = { WebACL = var.regional_waf_name, Region = data.aws_region.this.region, Rule = "ALL" }, desc = "WAF blocking an unusual volume of requests"
     }
   }
-  alarms = merge(local.db_alarms, local.alb_alarms, local.waf_alarms)
+  alarms = merge(local.db_alarms, local.replica_alarms, local.alb_alarms, local.waf_alarms)
 }
 
 resource "aws_cloudwatch_metric_alarm" "this" {
@@ -116,6 +145,23 @@ resource "aws_cloudwatch_metric_alarm" "this" {
   threshold           = each.value.threshold
   comparison_operator = each.value.op
   treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
+# Published hourly by the CronJob in k8s/base/freshclam-check.yaml. No data also alarms, because it means
+# that job has stopped, so this reads as an alarm until the first sync has run.
+resource "aws_cloudwatch_metric_alarm" "freshclam" {
+  alarm_name          = "hrms-${var.slug}-freshclam"
+  alarm_description   = "ClamAV signatures are old, or their age is not being reported: uploads are scanned against stale signatures"
+  namespace           = "HRMS"
+  metric_name         = "ClamavSignatureAgeHours"
+  statistic           = "Maximum"
+  period              = 3600
+  evaluation_periods  = 2
+  threshold           = var.clamav_signature_max_age_hours
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
   alarm_actions       = [aws_sns_topic.alarms.arn]
   ok_actions          = [aws_sns_topic.alarms.arn]
 }

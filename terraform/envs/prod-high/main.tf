@@ -244,6 +244,8 @@ module "monitoring" {
   alarm_emails           = var.alarm_emails
   monthly_budget_usd     = var.monthly_budget_usd
   db_instance_identifier = module.rds.identifier
+  db_replica_enabled     = true
+  db_replica_identifier  = module.rds.read_identifier
   db_max_connections     = var.db_max_connections
   alb_enabled            = var.alb_arn_suffix != null
   alb_arn_suffix         = var.alb_arn_suffix

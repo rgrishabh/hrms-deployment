@@ -1,15 +1,17 @@
 output "overlay_values" {
   description = "Read by scripts/new-client-overlay.sh."
   value = {
-    tier                   = "low"
-    region                 = var.region
-    rds_master_secret_name = module.rds.master_secret_name
-    backend_role_arn       = ""
-    worker_role_arn        = ""
-    secrets_role_arn       = ""
-    certificate_arn        = module.acm.certificate_arn
-    alb_security_group_id  = ""
-    alb_logs_bucket        = module.alb_logs.bucket
+    tier                     = "low"
+    region                   = var.region
+    rds_master_secret_name   = module.rds.master_secret_name
+    backend_role_arn         = ""
+    worker_role_arn          = ""
+    secrets_role_arn         = ""
+    migrate_role_arn         = ""
+    freshclam_check_role_arn = ""
+    certificate_arn          = module.acm.certificate_arn
+    alb_security_group_id    = ""
+    alb_logs_bucket          = module.alb_logs.bucket
   }
 }
 

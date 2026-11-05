@@ -106,6 +106,7 @@ module "iam" {
 
 module "k3s" {
   source               = "../../modules/k3s"
+  metrics_policy_json  = module.iam.metrics_policy_json
   vpc_id               = module.vpc.vpc_id
   vpc_cidr             = module.vpc.cidr
   app_subnet_ids       = module.vpc.app_subnet_ids
@@ -173,6 +174,8 @@ module "monitoring" {
   alarm_emails           = var.alarm_emails
   monthly_budget_usd     = var.monthly_budget_usd
   db_instance_identifier = module.rds.identifier
+  db_replica_enabled     = true
+  db_replica_identifier  = module.rds.read_identifier
   alb_enabled            = true
   alb_arn_suffix         = module.k3s.alb_arn_suffix
   regional_waf_name      = module.waf.web_acl_name

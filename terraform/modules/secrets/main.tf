@@ -130,6 +130,31 @@ resource "aws_secretsmanager_secret_version" "smtp" {
   }
 }
 
+# Optional runtime secrets. They start empty, which the app reads as unset, so that External Secrets can
+# always resolve them. The operator's later value is not overwritten.
+resource "aws_secretsmanager_secret" "runtime_optional" {
+  #checkov:skip=CKV2_AWS_57:Set by an operator. Each value has its own runbook step for rotation.
+  name                    = "hrms/runtime-optional"
+  description             = "JSON with metrics_token, vapid_private_key and data_key_ciphertext_previous. Set by an operator."
+  kms_key_id              = var.kms_key_arn
+  recovery_window_in_days = var.recovery_window_days
+  dynamic "replica" {
+    for_each = var.replica_region == null ? [] : [var.replica_region]
+    content {
+      region     = replica.value
+      kms_key_id = var.replica_kms_key_arn
+    }
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "runtime_optional" {
+  secret_id     = aws_secretsmanager_secret.runtime_optional.id
+  secret_string = jsonencode({ metrics_token = "", vapid_private_key = "", data_key_ciphertext_previous = "" })
+  lifecycle {
+    ignore_changes = [secret_string, version_stages]
+  }
+}
+
 # Non-sensitive values, kept here so that External Secrets carries them into pods and no client
 # overlay has to copy them by hand.
 resource "aws_secretsmanager_secret" "infra" {
