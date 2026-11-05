@@ -112,7 +112,9 @@ Requests in flight keep the steps they were created with. Moving down to a small
 | Variable | Notes |
 |---|---|
 | `DATABASE_URL`, `DATABASE_MIGRATION_URL` | Secret. Runtime role and schema owner role |
-| `DB_READ_HOST` | Optional. Reports and heavy reads go to this replica |
+| `DB_READ_HOST` | Optional. `host` or `host:port` of a read replica, with the same database name and role as `DATABASE_URL`. Report runs and exports read from it, in read-only transactions with RLS applied. Writes, and reads of what was just written, stay on the primary. If it cannot be reached, the primary answers. Reports can lag the primary by the replica's replication delay |
+| `METRICS_TOKEN` | Optional, secret, at least 16 characters. `GET /metrics` answers Prometheus text to `Authorization: Bearer <token>`, and 404 to anyone else. Unset, the route does not exist. API process only: the worker has no HTTP listener |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional, for example `http://collector:4318`. Sends a span per request over OTLP/HTTP JSON: method, route pattern, status. Unset, nothing is sent |
 | `REDIS_URL` | Optional. Caches config and lookups. Without it the app reads the database, which is slower but correct |
 | `DATA_ENCRYPTION_KEY` | Secret, dev only. Base64 of 32 bytes |
 | `KMS_KEY_ID`, `DATA_KEY_CIPHERTEXT` | Prod. The data key is decrypted with KMS at startup. Takes priority over `DATA_ENCRYPTION_KEY` |
@@ -143,6 +145,7 @@ Run in the image, as the schema owner. Nothing here has an HTTP endpoint.
 
 | Command | Does |
 |---|---|
+| `hrms migrate-down --steps N`, `--to NAME`, `--all` | Rolls schema migrations back, using the down files of the image being left, so run it **before** deploying the older image. It has no default. Dropped data and scrubbed plaintext cannot return, only their structure: see the backend `README.md`, Rollback |
 | `hrms rotate-keys` | Re-encrypts every encrypted column with the active key, in committed batches. Rows already on it are skipped, so it can be run again. Needs the old key in a `*_PREVIOUS` variable while it runs |
 | `hrms bootstrap` | First organization and first administrator, as Owner. A one-time link by default |
 | `hrms bootstrap --reset-admin --admin-email X` | Recovers an account: new credentials, sessions ended, MFA cleared, administrator role restored. They also become Owner if no other active Owner exists |
@@ -173,6 +176,8 @@ Run in the image, as the schema owner. Nothing here has an HTTP endpoint.
 | `BRAND_FINANCIAL_YEAR_START` | Yes | `MM-DD` |
 | `BRAND_COUNTRY` | Yes | ISO 3166-1 alpha-2 |
 
+PDFs (payslips, letters, report exports) draw the logo only from a PNG or JPEG under `/brand`. An SVG, or an `https://` logo URL, which the server never fetches, prints the brand name instead.
+
 Brand files are mounted, not baked in: a volume at `/brand` in Compose, and a ConfigMap or S3 path in Kubernetes. The frontend gets these values at boot from the same public endpoint as the flags:
 
 ```
@@ -193,6 +198,7 @@ Stored in the database and edited in the app. Each change is validated, restrict
 - Departments, designations, grades
 - Approval workflows, payroll components, notification preferences
 - Whether managers can see team salaries, capped by the salary hierarchy
+- Data retention: documents after exit, notifications, sent mail, job runs, and the years payroll, attendance and dispute records are held against erasure
 - Session lifetime, idle sign-out, failed sign-ins before back-off, a password minimum above the floor
 - Which document categories payroll staff and auditors can read
 
@@ -228,6 +234,8 @@ These are in code and the same for every client. Changing one is a product relea
 | A user's salary access level | 3 | Users, audited, capped below the editor's own level |
 | Manager sees team salaries | 3 | Settings → Security |
 | Idle sign-out, session lifetime | 3 | Settings → Security, within `SESSION_TTL_HOURS` |
+| Metrics token, trace collector | 1 and secret | `METRICS_TOKEN`, `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| Retention periods | 3 | Settings → Data retention |
 | Payroll components | 3 | Settings → Payroll |
 | Statutory rates | 3 | Rule register, maker-checker |
 | Who can see salaries, by rule | 4 | Policy code |
