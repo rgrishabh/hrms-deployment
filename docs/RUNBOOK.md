@@ -155,6 +155,8 @@ Works the same on the dev host, a laptop and an on-prem client. From `dev/` (`/o
 
 **Change the brand without a rebuild.** Edit `.brandenv`, then `bin/dc up -d --no-deps backend worker frontend`. Only those three are recreated, from the same images. On the `tls` profile add `caddy` if the domain changed. Logos go in `brand/`: PDFs draw a PNG or JPEG, and anything else prints the brand name.
 
+**Removing a stack.** `bin/dc down -v` deletes the data. Giving `--profile` on the command line replaces `COMPOSE_PROFILES`, and services of any profile not named are left running, so name them all or none.
+
 **Is the worker alive?** `bin/dc exec worker hrms worker-health` exits 0 when its heartbeat is fresh and a scheduler pass is not stuck. The health check runs the same command. It says why when it fails.
 
 **Metrics.** `/metrics` is not routed through Caddy. Read it from inside: `bin/dc exec backend wget -qO- --header "Authorization: Bearer $(sed -n 's/^METRICS_TOKEN=//p' .env)" http://127.0.0.1:4000/metrics`. A 200 from `http://localhost:8088/metrics` is only the frontend's page.
@@ -272,7 +274,7 @@ kubectl -n argocd port-forward svc/argocd-server 8080:443
 | Email never arrives | `FEATURE_EMAIL_NOTIFICATIONS`, `hrms/smtp-credentials`, then worker logs. Egress on 587 and 465 is allowed |
 | Tier-low: everything returns 503 | Node replaced and still installing. Check the ALB target group, then `journalctl -u k3s` through SSM |
 | Sync blocked by a Kyverno message | A digest or limit is missing: read the message |
-| Alarm `freshclam` | Signatures older than 48 hours, or no report for 2 hours. `kubectl -n hrms logs job/<latest hrms-freshclam-check>`, then `logs deploy/hrms-clamav`. It also fires until the first sync has run |
+| Alarm `freshclam` | Signatures older than 96 hours, or no report for 2 hours. `kubectl -n hrms logs job/<latest hrms-freshclam-check>`, then `logs deploy/hrms-clamav`. It also fires until the first sync has run |
 | Alarm `db-replica-lag` | Reports are stale, and still correct as of the delay. Check the replica's load in Performance Insights |
 | Worker restarts, `worker unhealthy: no heartbeat` | The process is stuck or cannot write `/tmp`. `kubectl -n hrms logs deploy/hrms-worker --previous` |
 

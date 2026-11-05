@@ -161,7 +161,7 @@ The one weakness is identity. Without IRSA, backend, worker and External Secrets
 
 **Context.** Nothing in AWS sees freshclam, and container logs do not reach CloudWatch on these tiers, so there is no log filter to alarm on. A log agent on every node to watch one thing costs more than the thing is worth.
 
-**Decision.** clamd reports its signature date over its own port. An hourly CronJob reads it and publishes `HRMS/ClamavSignatureAgeHours`. The alarm fires above 48 hours and on missing data, so a dead job is also caught.
+**Decision.** clamd reports its signature date over its own port. An hourly CronJob reads it and publishes `HRMS/ClamavSignatureAgeHours`. The alarm fires above 96 hours and on missing data, so a dead job is also caught. The threshold is measured: with freshclam up to date, the newest signatures were 45 hours old.
 
 **Reason.** It watches the outcome rather than the process: signatures clamd has actually loaded. The check's TCP and date steps have run against a real clamd. `put-metric-data` and the alarm have not, without an AWS account. It reads as an alarm until the first sync, so a new client's first email may be this one.
 

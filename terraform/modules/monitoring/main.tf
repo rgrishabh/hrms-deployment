@@ -49,9 +49,9 @@ variable "db_replica_lag_seconds" {
 }
 
 variable "clamav_signature_max_age_hours" {
-  description = "ClamAV publishes several updates a day, so this much age means freshclam has stopped."
+  description = "The newest signatures available were 45 hours old when this was measured, so allow for a gap in publishing."
   type        = number
-  default     = 48
+  default     = 96
 }
 
 variable "alb_enabled" {

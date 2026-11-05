@@ -4,7 +4,7 @@
 
 | Path | Your time | Machine time |
 |---|---|---|
-| On-prem, one host | 5 minutes | @@MACHINE@@ |
+| On-prem, one host | 5 minutes | 3 minutes, plus DNS and a certificate on `tls` |
 | `prod-low` | 20 minutes | About 25 minutes |
 | `prod-mid`, `prod-high` | 30 minutes | About 50 minutes, plus a second apply |
 
@@ -36,7 +36,7 @@ cat setup-link.txt           # one-time link for the first administrator; delete
 
 **To try it on a laptop,** edit only `BOOTSTRAP_ADMIN_*` in `.env` and the tags in `versions.env`. The defaults give plain HTTP at `http://localhost:8088`. To build the images rather than pull a release, see "Building images on a laptop" in the [RUNBOOK](RUNBOOK.md#the-dev-stack).
 
-**Measured:** @@MEASURED@@
+**Measured:** 176 seconds from `git clone` to a signed-in administrator, on 2026-11-05: an arm64 laptop, Colima with 4 CPUs and 5 GiB, plain HTTP. Building both images with an empty cache took 80 seconds, and `make up`, pulling five images, 95. Your time to edit the files is on top, and pulling released images replaces the build. The AWS paths have not been timed.
 
 Point DNS at the host first, with ports 80 and 443 open, or use `CADDY_TLS="tls internal"`. Keep a copy of `.env` in a password manager: **without `DATA_ENCRYPTION_KEY`, restored bank details are unreadable.** Add the `s3backup` profile, or another off-host copy.
 
