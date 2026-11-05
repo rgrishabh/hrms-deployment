@@ -24,15 +24,8 @@ Steps:
    ```bash
    git fetch origin && git show origin/main:.github/workflows/_app-publish.yml | grep -n 'platforms:'
    ```
-3. In `hrms-backend`, on its revamp branch, change these two lines and leave the rest:
-   ```yaml
-   # .github/workflows/publish-develop.yml:29
-       uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
-   # .github/workflows/release.yml:41
-       uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
-   ```
-   Note the change in its decision D65, which says these calls are pinned.
-4. `hrms-frontend` needs no change: it already calls `_app-publish.yml@main`.
+3. `hrms-backend` needs no change for this: its revamp branch calls `_app-publish.yml@main` in `publish-develop.yml` and `release.yml`, recorded in its decision D65. It fails until step 2 is true.
+4. `hrms-frontend` needs no change either: it already calls `_app-publish.yml@main`.
 5. Optional: move the two `_app-ci.yml` pins in `hrms-backend` (`ci.yml:17`, `publish-develop.yml:18`) to any commit on `main` at or after the merge, with `git rev-parse origin/main`.
 6. Merge the apps during Step 2, backend and then frontend, with *Deploy dev* disabled as that step says.
 7. **On the first published develop image, before anything relies on it,** check the identity. This is the only test of the pin before production:
