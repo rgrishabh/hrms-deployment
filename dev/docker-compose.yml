@@ -418,7 +418,7 @@ services:
       net.ipv4.ip_unprivileged_port_start: "0"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - export SITE_ADDRESS="$$BRAND_DOMAIN$${BRAND_EXTRA_DOMAINS:+,$$BRAND_EXTRA_DOMAINS}"; exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+      - export SITE_ADDRESS="$$(echo "$$BRAND_DOMAIN$${BRAND_EXTRA_DOMAINS:+,$$BRAND_EXTRA_DOMAINS}" | sed "s/,/, /g")"; exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     depends_on:
       volume-perms: { condition: service_completed_successfully }
       backend: { condition: service_healthy }
@@ -427,7 +427,7 @@ services:
     environment:
       CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}
       CADDY_TLS: ${CADDY_TLS:-}
-      CADDY_REDIRECT_ADDRESSES: ${CADDY_REDIRECT_ADDRESSES:-}
+      CADDY_REDIRECT_ADDRESSES: ${CADDY_REDIRECT_ADDRESSES:-http://redirect.invalid}
     ports:
       - "80:80"
       - "443:443"
