@@ -18,8 +18,8 @@ name: hrms-dev
 
 x-backend-image: &backend-image ${IMAGE_REGISTRY:-ghcr.io/rgrishabh}/hrms-backend:${BACKEND_TAG:?BACKEND_TAG missing (versions.env)}
 x-frontend-image: &frontend-image ${IMAGE_REGISTRY:-ghcr.io/rgrishabh}/hrms-frontend:${FRONTEND_TAG:?FRONTEND_TAG missing (versions.env)}
-x-postgres-image: &postgres-image postgres:17.11-alpine
-x-caddy-image: &caddy-image caddy:2.11.8-alpine
+x-postgres-image: &postgres-image postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+x-caddy-image: &caddy-image caddy:2.11.8-alpine@sha256:3db3a09e418f86a8fce8de4bc0026fccd2b4cd925aef00cc7d843d9fdc75e442
 
 x-hardening: &hardening
   read_only: true
@@ -70,8 +70,19 @@ x-features: &features
   FEATURE_EMAIL_NOTIFICATIONS: ${FEATURE_EMAIL_NOTIFICATIONS:-true}
   FEATURE_PUSH_NOTIFICATIONS: ${FEATURE_PUSH_NOTIFICATIONS:-false}
 
+# The data key and, during a rotation, the older keys still needed to read values. Runtime, and the
+# migrate service, whose code migrations and `rotate-keys` read encrypted columns. KMS_* takes priority.
+x-data-keys: &data-keys
+  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Run bin/init-env to generate secrets}
+  DATA_ENCRYPTION_KEY_PREVIOUS: ${DATA_ENCRYPTION_KEY_PREVIOUS:-}
+  KMS_KEY_ID: ${KMS_KEY_ID:-}
+  DATA_KEY_CIPHERTEXT: ${DATA_KEY_CIPHERTEXT:-}
+  DATA_KEY_CIPHERTEXT_PREVIOUS: ${DATA_KEY_CIPHERTEXT_PREVIOUS:-}
+  AWS_REGION: ${AWS_REGION:-ap-south-1}
+
 # Shared by backend and worker. Holds the runtime database role only, never owner or superuser.
 x-runtime-env: &runtime-env
+  <<: *data-keys
   NODE_ENV: ${NODE_ENV:-production}
   HOST: 0.0.0.0
   PORT: "4000"
@@ -80,9 +91,17 @@ x-runtime-env: &runtime-env
   DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
   DB_READ_HOST: ${DB_READ_HOST:-}
   REDIS_URL: redis://:${REDIS_PASSWORD:?Run bin/init-env to generate secrets}@redis:6379/0
-  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Run bin/init-env to generate secrets}
   COOKIE_SECURE: ${COOKIE_SECURE:-true}
-  TRUST_PROXY: "true"
+  TRUST_PROXY: ${TRUST_PROXY:-1} # one hop: Caddy. Add one for each proxy or load balancer in front of it
+  RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-3000}
+  AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-20}
+  AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: ${AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE:-10}
+  EXPORT_RATE_LIMIT_PER_MINUTE: ${EXPORT_RATE_LIMIT_PER_MINUTE:-30}
+  JOBS_INTERVAL_SECONDS: ${JOBS_INTERVAL_SECONDS:-60}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+  VAPID_SUBJECT: ${VAPID_SUBJECT:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
   ORG_MANAGEMENT_MODE: ${ORG_MANAGEMENT_MODE:-multi}
@@ -93,7 +112,6 @@ x-runtime-env: &runtime-env
   STORAGE_PATH: /app/storage
   STORAGE_MAX_FILE_MB: ${STORAGE_MAX_FILE_MB:-10}
   AWS_S3_BUCKET: ${AWS_S3_BUCKET:-}
-  AWS_REGION: ${AWS_REGION:-ap-south-1}
   S3_ENDPOINT: ${S3_ENDPOINT:-}
   AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
   AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
@@ -110,6 +128,7 @@ x-runtime-depends: &runtime-depends
   redis: { condition: service_healthy }
   mailpit: { condition: service_healthy }
   clamav: { condition: service_healthy }
+  minio-init: { condition: service_completed_successfully, required: false } # only with the minio profile
 
 services:
   postgres:
@@ -151,7 +170,7 @@ services:
 
   # Cache only: no persistence, so a restart is an empty cache and the app reads the database.
   redis:
-    image: redis:7.4.12-alpine
+    image: redis:7.4.12-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     user: "999:1000"
     read_only: true
     tmpfs:
@@ -179,7 +198,7 @@ services:
 
   # Catches all outgoing mail in dev. The UI is not published; see docker-compose.override.example.yml.
   mailpit:
-    image: axllent/mailpit:v1.33.0
+    image: axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231
     user: "1000:1000"
     <<: [*hardening, *logging]
     restart: unless-stopped
@@ -200,13 +219,13 @@ services:
 
   # Upload malware scanning. /init-unprivileged is the image's own non-root entrypoint.
   clamav:
-    image: clamav/clamav:1.5.4
-    user: "100:101"
+    image: clamav/clamav-debian:1.5.4@sha256:c21aa18cc0a358678255a3dfb343a4555b58f71b97d7b869df8fdf7ea0a5b4b1
+    user: "1000:1000"
     entrypoint: ["/init-unprivileged"]
     read_only: true
     tmpfs:
-      - /tmp:uid=100,gid=101,mode=1777
-      - /var/log/clamav:uid=100,gid=101,mode=0750
+      - /tmp:uid=1000,gid=1000,mode=1777
+      - /var/log/clamav:uid=1000,gid=1000,mode=0750
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     <<: *logging
@@ -256,6 +275,7 @@ services:
     pids_limit: 64
     environment:
       DB_HOST: postgres
+      DB_PORT: "5432"
       DB_NAME: hrms
       DB_ADMIN_USER: postgres
       DB_ADMIN_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?Run bin/init-env to generate secrets}
@@ -267,7 +287,8 @@ services:
     networks: [internal]
     restart: "no"
 
-  # Pending migrations: forward-only, checksummed, serialized by an advisory lock.
+  # Pending migrations: checksummed, serialized by an advisory lock. The same service runs the operator
+  # commands, for example: bin/dc run --rm --no-deps migrate migrate-down --steps 1
   migrate:
     image: *backend-image
     <<: [*hardening, *logging]
@@ -276,6 +297,7 @@ services:
     cpus: 0.5
     pids_limit: 64
     environment:
+      <<: *data-keys
       DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
       DATABASE_SSL: disable
     depends_on:
@@ -294,6 +316,8 @@ services:
     pids_limit: 64
     env_file: [.brandenv]
     environment:
+      NODE_ENV: ${NODE_ENV:-production} # with COOKIE_SECURE, sets the scheme of the setup link
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
       DATABASE_SSL: disable
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL in .env}
@@ -317,6 +341,7 @@ services:
     environment:
       <<: [*runtime-env, *features]
       PROCESS_ROLE: api
+      METRICS_TOKEN: ${METRICS_TOKEN:-} # API only: the worker has no listener
     volumes:
       - ./brand:/brand:ro
       - app-storage:/app/storage
@@ -344,17 +369,18 @@ services:
     environment:
       <<: [*runtime-env, *features]
       PROCESS_ROLE: worker
+      WORKER_HEARTBEAT_FILE: /tmp/hrms-worker-heartbeat.json
     volumes:
       - ./brand:/brand:ro
       - app-storage:/app/storage
     networks: [internal, edge] # edge: real SMTP in on-prem installations
-    # The worker has no HTTP port, so this shows only that the container can run node.
+    # No HTTP port: the worker writes a heartbeat file, and this fails when it is stale or a pass is stuck.
     healthcheck:
-      test: ["CMD", "node", "-e", "0"]
+      test: ["CMD", "hrms", "worker-health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   frontend:
     image: *frontend-image
@@ -483,7 +509,7 @@ services:
   # Optional off-host copy: COMPOSE_PROFILES includes s3backup and BACKUP_S3_URI is set.
   backup-s3:
     profiles: ["s3backup"]
-    image: amazon/aws-cli:2.39.3
+    image: amazon/aws-cli:2.39.3@sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f
     user: "1000:1000"
     <<: [*hardening, *logging]
     restart: unless-stopped
@@ -519,14 +545,15 @@ services:
   # Optional S3-compatible storage: STORAGE_DRIVER=s3 and S3_ENDPOINT=http://minio:9000. Console not published.
   minio:
     profiles: ["minio"]
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # MinIO no longer publishes public images (DECISIONS.md, ADR-015). Chainguard's build is free by digest.
+    image: cgr.dev/chainguard/minio@sha256:3c60a2a8c4d33409a9bc7a623a7fcbfb4605adc3d89422d2f53b3f673a6e5597
     user: "1000:1000"
     <<: [*hardening, *logging]
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
     pids_limit: 128
-    command: ["server", "/data", "--address", ":9000", "--console-address", "127.0.0.1:9001"]
+    command: ["--certs-dir", "/tmp/certs", "server", "/data", "--address", ":9000", "--console-address", "127.0.0.1:9001"]
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-}
@@ -536,7 +563,8 @@ services:
       - minio-data:/data
     networks: [internal]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # The image has bash, but no curl, wget, grep or mc.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /minio/health/live HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; read -r line <&3; [[ $$line == *' 200 '* ]]"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -544,19 +572,15 @@ services:
 
   minio-init:
     profiles: ["minio"]
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: cgr.dev/chainguard/minio-client@sha256:1dccd2a6fd59914a98ac2d9dad95e552c91243cb0bd7242aaa224802df4b3432
     user: "1000:1000"
     <<: [*hardening, *logging]
     mem_limit: 128m
     cpus: 0.25
     pids_limit: 32
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - export HOME=/tmp; mc alias set local http://minio:9000 "$$S3_ACCESS_KEY_ID" "$$S3_SECRET_ACCESS_KEY" && mc mb --ignore-existing "local/$$AWS_S3_BUCKET"
+    command: ["--config-dir", "/tmp/mc", "mb", "--ignore-existing", "local/${AWS_S3_BUCKET:-hrms-documents}"]
     environment:
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
-      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-hrms-documents}
+      MC_HOST_local: http://${S3_ACCESS_KEY_ID:-}:${S3_SECRET_ACCESS_KEY:-}@minio:9000
     depends_on:
       minio: { condition: service_healthy }
     networks: [internal]
@@ -574,6 +598,9 @@ services:
     pids_limit: 64
     env_file: [.brandenv]
     environment:
+      <<: [*data-keys, *features]
+      NODE_ENV: ${NODE_ENV:-production}
+      ORG_MANAGEMENT_MODE: ${ORG_MANAGEMENT_MODE:-multi}
       DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
       DATABASE_SSL: disable
       DEMO_DATA_ALLOWED: ${DEMO_DATA_ALLOWED:-false}

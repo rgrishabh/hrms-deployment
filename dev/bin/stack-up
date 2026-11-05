@@ -34,7 +34,13 @@ dc run --rm --no-deps -T migrate
 out=$(dc run --rm --no-deps -T bootstrap 2>&1) || { echo "$out" | grep -v 'setup#token=' >&2; fail "bootstrap failed"; }
 echo "$out" | grep '^{' | grep -v 'setup#token=' || true
 if echo "$out" | grep -q 'setup#token='; then
-  (umask 077; echo "$out" | grep 'setup#token=' > setup-link.txt)
+  # The backend knows the hostname only. On the local profile the site is on HTTP_PORT, so add it here.
+  http_port=$(sed -n 's/^HTTP_PORT=//p' .env | tail -n 1)
+  link=$(echo "$out" | grep 'setup#token=')
+  if sed -n 's/^COMPOSE_PROFILES=//p' .env | tail -n 1 | grep -qw local; then
+    link=$(echo "$link" | sed -E "s#^http://([^/:]+)/#http://\1:${http_port:-8088}/#")
+  fi
+  (umask 077; echo "$link" > setup-link.txt)
   log "first administrator created: one-time setup link saved to $PWD/setup-link.txt (mode 600). Read it, then delete it."
 fi
 

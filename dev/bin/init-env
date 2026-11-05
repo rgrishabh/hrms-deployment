@@ -18,7 +18,7 @@ changed=0
 while IFS= read -r line || [ -n "$line" ]; do
   key=${line%%=*}
   case "$key" in
-    POSTGRES_SUPERUSER_PASSWORD|DB_OWNER_PASSWORD|DB_APP_PASSWORD|REDIS_PASSWORD|DATA_ENCRYPTION_KEY)
+    POSTGRES_SUPERUSER_PASSWORD|DB_OWNER_PASSWORD|DB_APP_PASSWORD|REDIS_PASSWORD|DATA_ENCRYPTION_KEY|METRICS_TOKEN)
       if [ "$line" = "$key=" ]; then line="$key=$(gen "$key")"; changed=$((changed+1)); fi ;;
   esac
   printf '%s\n' "$line" >> "$tmp"

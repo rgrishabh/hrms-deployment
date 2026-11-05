@@ -1,7 +1,7 @@
 # Commands for one installation. They assume only docker compose, make, sh and openssl, so they work
 # on a laptop as well as on a Linux host.
 .DEFAULT_GOAL := help
-.PHONY: help init up down logs ps config migrate seed backup restore test
+.PHONY: help init up down logs ps config migrate migrate-status migrate-down rotate-keys seed backup restore test
 
 help: ## Show this list
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/^([a-z-]+):.*## /  \1\t/'
@@ -29,6 +29,16 @@ config: ## Validate the Compose file against .env, versions.env and .brandenv
 
 migrate: ## Apply pending migrations without restarting the app
 	@bin/dc run --rm --no-deps migrate
+
+migrate-status: ## Applied, pending and unknown migrations. Exit 2 when pending, 3 when the database is ahead
+	@bin/dc run --rm --no-deps -T migrate migrate-status
+
+migrate-down: ## Undo migrations with the image in versions.env, BEFORE moving to an older one: make migrate-down ARGS="--steps 1"
+	@[ -n "$(ARGS)" ] || { echo 'usage: make migrate-down ARGS="--steps N" (or --to NAME, or --all)' >&2; exit 2; }
+	@bin/dc run --rm --no-deps -T migrate migrate-down $(ARGS)
+
+rotate-keys: ## Re-encrypt with the active key. Needs the old key in DATA_ENCRYPTION_KEY_PREVIOUS
+	@bin/dc run --rm --no-deps -T migrate rotate-keys
 
 seed: ## Load synthetic demo data. Dev and demo only; the backend refuses if real employees exist
 	@bin/demo-data
