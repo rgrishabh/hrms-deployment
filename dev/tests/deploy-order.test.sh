@@ -31,9 +31,16 @@ STUB
   chmod +x "$T/stubs/"*
 }
 
+# Leaves out a real stack's settings: they don't belong in a temp directory, and a local .brandenv would
+# make "missing .brandenv" pass through to a deploy.
+copy_dev() {
+  mkdir -p "$T/app"
+  tar -C "$ROOT/dev" --exclude=./.env --exclude=./.brandenv --exclude=./docker-compose.override.yml -cf - . | tar -xf - -C "$T/app"
+}
+
 echo "== dev/ stack, first deploy after the old stack"
 T=$(mktemp -d); stub_docker db 0
-cp -R "$ROOT/dev" "$T/app"; cd "$T/app" || exit 1
+copy_dev; cd "$T/app" || exit 1
 cp .brandenv.example .brandenv; : > .env; printf 'BACKEND_TAG=sha-0000000\nFRONTEND_TAG=sha-0000000\n' > versions.env
 PATH="$T/stubs:$PATH" ./deploy-dev.sh > "$T/out" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then ok "deploy succeeds"; else bad "deploy succeeds: $(tail -3 "$T/out")"; fi
@@ -47,7 +54,7 @@ rm -rf "$T"
 
 echo "== dev/ stack, failed pre-migration backup"
 T=$(mktemp -d); stub_docker postgres 1
-cp -R "$ROOT/dev" "$T/app"; cd "$T/app" || exit 1
+copy_dev; cd "$T/app" || exit 1
 cp .brandenv.example .brandenv; : > .env; printf 'BACKEND_TAG=sha-0000000\nFRONTEND_TAG=sha-0000000\n' > versions.env
 if PATH="$T/stubs:$PATH" ./deploy-dev.sh > "$T/out" 2>&1; then bad "deploy stops"; else ok "deploy stops"; fi
 if grep -q 'T migrate' "$T/calls"; then bad "nothing is migrated"; else ok "nothing is migrated"; fi
@@ -55,7 +62,7 @@ rm -rf "$T"
 
 echo "== dev/ stack, missing .brandenv"
 T=$(mktemp -d); stub_docker postgres 0
-cp -R "$ROOT/dev" "$T/app"; cd "$T/app" || exit 1
+copy_dev; cd "$T/app" || exit 1
 : > .env; printf 'BACKEND_TAG=sha-0000000\nFRONTEND_TAG=sha-0000000\n' > versions.env
 if PATH="$T/stubs:$PATH" ./deploy-dev.sh > "$T/out" 2>&1; then bad "deploy refuses"; else ok "deploy refuses"; fi
 if grep -q 'compose' "$T/calls" 2>/dev/null; then bad "docker compose never ran"; else ok "docker compose never ran"; fi
