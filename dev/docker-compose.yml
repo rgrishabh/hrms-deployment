@@ -92,9 +92,10 @@ x-runtime-env: &runtime-env
   DB_READ_HOST: ${DB_READ_HOST:-}
   REDIS_URL: redis://:${REDIS_PASSWORD:?Run bin/init-env to generate secrets}@redis:6379/0
   COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  PUBLIC_URL: ${PUBLIC_URL:-} # the address for links, with its port. Empty: the backend follows BRAND_DOMAIN
   TRUST_PROXY: ${TRUST_PROXY:-1} # one hop: Caddy. Add one for each proxy or load balancer in front of it
   RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-3000}
-  AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-20}
+  AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-300}
   AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: ${AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE:-10}
   EXPORT_RATE_LIMIT_PER_MINUTE: ${EXPORT_RATE_LIMIT_PER_MINUTE:-30}
   JOBS_INTERVAL_SECONDS: ${JOBS_INTERVAL_SECONDS:-60}
@@ -318,6 +319,7 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-production} # with COOKIE_SECURE, sets the scheme of the setup link
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      PUBLIC_URL: ${PUBLIC_URL:-} # the setup link
       DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
       DATABASE_SSL: disable
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL in .env}
@@ -601,6 +603,7 @@ services:
       <<: [*data-keys, *features]
       NODE_ENV: ${NODE_ENV:-production}
       ORG_MANAGEMENT_MODE: ${ORG_MANAGEMENT_MODE:-multi}
+      PUBLIC_URL: ${PUBLIC_URL:-} # the address it prints
       DATABASE_MIGRATION_URL: postgres://hrms_owner:${DB_OWNER_PASSWORD:?Run bin/init-env to generate secrets}@postgres:5432/hrms
       DATABASE_SSL: disable
       DEMO_DATA_ALLOWED: ${DEMO_DATA_ALLOWED:-false}

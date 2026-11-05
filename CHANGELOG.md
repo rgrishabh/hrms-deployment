@@ -14,10 +14,12 @@
 - All deployment variables in the contract, in Compose and Kustomize: rate limits, previous keys, `TRUST_PROXY` hops, VAPID, `METRICS_TOKEN`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `WORKER_HEARTBEAT_FILE`.
 - `hrms worker-health` as the worker probe. `make migrate-status`, `migrate-down`, `rotate-keys`. `scripts/k8s-ops-job.sh`, `scripts/gitops-release.sh`, `scripts/k8s-wait-release.sh`, `scripts/check-backend-env.sh`.
 - Alarms on replication lag and on ClamAV signature age. `rds.allowed_extensions` for the migrations' three extensions. IAM roles and service accounts for migrate and the freshclam check. Secret `hrms/runtime-optional`.
+- Optional `PUBLIC_URL`, the address for links, in Compose, `.env.example`, `app.env` and the contract.
 - Repository variable `DEV_STACK_DIR`, default `environments/dev`, and new optional settings `DEV_ENV_FILE_V2`, `DEV_BRANDENV`, `DEV_EXPECT_BRAND`, all unused until the cutover.
 
 ### Changed
 
+- `AUTH_RATE_LIMIT_PER_MINUTE` from 20 to 300 in Compose, `.env.example` and `app.env`, following backend D68.
 - `deploy-prod.yml` and `rollback-prod.yml` pin digests in the client's repository rather than deploying to ECS. `customers.json` gains `gitops_repo`, and each `prod-<slug>` a `GITOPS_TOKEN`. `rollback-prod.yml` needs `schema: compatible`, and no longer has an AWS role.
 - ClamAV image to `clamav/clamav-debian`, UID 1000. MinIO images to Chainguard's, by digest.
 - `TRUST_PROXY` from `true` to hop counts: 1 in Compose, 2 in Kubernetes.

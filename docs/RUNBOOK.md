@@ -151,7 +151,7 @@ Works the same on the dev host, a laptop and an on-prem client. From `dev/` (`/o
 | Restore | `make restore SET=path/to/hrms-<ts> CONFIRM=hrms-dev` |
 | Offline tests | `make test` |
 
-**Local access.** With `COMPOSE_PROFILES=local`, the site is at `http://localhost:8088`. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` for caught email at `http://localhost:8025`. Links in email have no port, because the backend knows only the hostname, so add `:8088` by hand on a laptop. `setup-link.txt` already has it.
+**Local access.** With `COMPOSE_PROFILES=local`, the site is at `http://localhost:8088`. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` for caught email at `http://localhost:8025`. `PUBLIC_URL` in `.env` gives links in email their port. An older `.env` without it has links with no port, so add the line from `.env.example`. `setup-link.txt` has the port either way.
 
 **Change the brand without a rebuild.** Edit `.brandenv`, then `bin/dc up -d --no-deps backend worker frontend`. Only those three are recreated, from the same images. On the `tls` profile add `caddy` if the domain changed. Logos go in `brand/`: PDFs draw a PNG or JPEG, and anything else prints the brand name.
 
