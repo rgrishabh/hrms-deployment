@@ -120,11 +120,15 @@ Requests in flight keep the steps they were created with. Moving down to a small
 | `KMS_KEY_ID`, `DATA_KEY_CIPHERTEXT` | Prod. The data key is decrypted with KMS at startup. Takes priority over `DATA_ENCRYPTION_KEY` |
 | `DATA_ENCRYPTION_KEY_PREVIOUS`, `DATA_KEY_CIPHERTEXT_PREVIOUS` | Comma-separated. Older keys still needed to read values during a rotation. Secret. Remove them after `hrms rotate-keys` has finished |
 | `PROCESS_ROLE` | `api` or `worker`. Only the worker runs jobs and sends email |
-| `TRUST_PROXY` | Whose `X-Forwarded-For` to believe: `false`, a number of proxy hops in front of the app, or comma-separated proxy addresses or CIDRs. `true` means one hop |
+| `JOBS_INTERVAL_SECONDS` | How often the worker looks for due jobs. Default 60 |
+| `WORKER_HEARTBEAT_FILE` | Where the worker writes the file that `hrms worker-health` reads. Must be writable, and the same for the worker and its probe. Default is in the temporary directory |
+| `TRUST_PROXY` | Whose `X-Forwarded-For` to believe: `false`, a number of proxy hops in front of the app, or comma-separated proxy addresses or CIDRs. `true` means one hop. Compose: `1`, Caddy. Kubernetes: `2`, CloudFront and the ALB on mid and high, the ALB and Traefik on low. Too low logs a proxy's address and rate-limits everyone together; too high lets a client choose its own address |
+| `RATE_LIMIT_PER_MINUTE` | All API requests per address per minute. Default 3000, because a whole office can share one address |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | Sign-in attempts per address per minute. Default 20. Failed sign-ins also back off, counted in the database |
 | `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE` | Sign-in attempts on one account per minute, from any address. Default 10. Browsers that have signed in to the account before, and addresses already backing off, do not count |
 | `EXPORT_RATE_LIMIT_PER_MINUTE` | CSV, Excel and journal exports per user per minute. Default 30. Per address, four times this |
 | `STORAGE_DRIVER`, `STORAGE_PATH`, `AWS_S3_BUCKET`, `AWS_REGION`, `S3_ENDPOINT` | `S3_ENDPOINT` is for MinIO |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | PWA push: base64url of raw P-256 keys, set as a pair, and a `mailto:` or `https://` contact. The private key is secret. Without them `FEATURE_PUSH_NOTIFICATIONS` answers 409 `feature_not_configured` |
 | `CLAMAV_HOST`, `CLAMAV_PORT` | Upload malware scanning over clamd's INSTREAM. Port defaults to 3310. Prod refuses to start without the host when `FEATURE_DOCUMENTS` is on, and refuses any upload it cannot scan. clamd's `StreamMaxLength` must be at least `STORAGE_MAX_FILE_MB` |
 
 ### SMTP

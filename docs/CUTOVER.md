@@ -14,13 +14,11 @@ This takes `dev.rgrishabh.in` from `environments/dev` to `dev/`, then removes EC
 1. On the host, take a backup and copy it off the box. Use `bin/backup` in `/opt/hrms/dev`.
 2. Restore that copy into a throwaway stack. Confirm the password-manager copy of `DATA_ENCRYPTION_KEY`.
 3. Check `DEV_ENV_FILE` for `notifications.sms` in `ENABLED_MODULES`. If it's there, remove it and redeploy first: this repository's merge stops passing `SMS_*` to the backend, and a module with no transport may stop startup.
-4. Rehearse `dev/` on a throwaway host with a separate domain, restoring the real backup into it. Prove these, none of which have run yet:
-   - non-root Postgres on the restored volume
-   - non-root Caddy on a copied `caddy-data`
-   - `clamav` with `/init-unprivileged`
-   - `up --wait` with the one-offs
-   - the worker
-   - total memory: the limits add up to about 6 GB, so check the instance size
+4. Rehearse `dev/` on a throwaway host with a separate domain, restoring the real backup into it. A clean install has run on a laptop, so `clamav` with `/init-unprivileged`, `up --wait` with the one-offs and the worker are proven there. Prove these, which have not run yet:
+   - non-root Postgres on the restored volume, which the first stack created
+   - non-root Caddy on a copied `caddy-data`, and the `tls` profile at all
+   - on `amd64`: the laptop run was `arm64`
+   - total memory: the limits add up to about 6 GB, and idle use was about 1.3 GB, so check the instance size
 
 ## Step 1: merge this repository (no behaviour change)
 
@@ -63,14 +61,7 @@ If the new backend's migrations already dropped something the old image reads, t
 
 Before the first client on the new tiers:
 
-1. Build the release job that replaces `deploy-prod.yml`, keeping its behaviours:
-   - cosign verification
-   - account check
-   - environment approval
-   - a snapshot before migrations (`rds:CreateDBSnapshot` on `hrms-release`)
-   - revert and alert
-   
-   Its deploy step becomes `scripts/k8s-release.sh`, committed to the client's repository.
-2. Update `rollback-prod.yml` and `release-prod.yml` the same way, including where tags live.
+1. `deploy-prod.yml` and `rollback-prod.yml` already pin digests in the client's repository. They have never run. Give each customer `gitops_repo` in `customers.json` and a `GITOPS_TOKEN` in `prod-<slug>`, then prove them on a first client. `release-prod.yml` is unchanged: tags still live in `environments/prod/<slug>/versions.env`.
+2. Decide whether alerts on a failed deploy should also go to the account's SNS topic. The ECS version read the topic from an SSM parameter that the new tiers do not create, so today only `NOTIFY_WEBHOOK_URL` and GitHub's own notification tell anyone.
 3. Delete `terraform/modules/hrms-stack`, `terraform/envs/customer`, `terraform/customers`, `scripts/deploy-prod.sh`, `scripts/set-registry-credentials.sh`, and the ECS parts of `docs/TERRAFORM.md`, `docs/DEPLOYMENT.md` and `docs/OPERATIONS_RUNBOOK.md`.
 4. Reduce `terraform.yml` to what `infra-checks.yml` does not cover. Remove the skip paths for those directories from `.checkov.yaml` and `.trivy.yaml`.

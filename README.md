@@ -12,12 +12,12 @@ argocd/                      Argo CD project, Application and add-ons
 terraform/modules/           kms vpc acm route53 waf s3 rds elasticache secrets iam eks k3s cloudfront backup monitoring
                              + org-guardrails, account-baseline, shared-services, and hrms-stack (ECS, until the cutover)
 terraform/envs/              prod-low, prod-mid, prod-high (+ organization, shared-services, customer)
-scripts/                     deploy, smoke test, k8s build and release, client overlay, data key, config parity
+scripts/                     deploy, smoke test, k8s build, release and operator Jobs, client overlay, data key, config and backend-env parity
 .github/workflows/           _app-ci, _app-publish (called by the app repos), deploy-dev, infra-checks, lint, terraform, release and rollback
 docs/                        See below
 ```
 
-**Status.** The dev pipeline is live. Everything under `k8s/`, `argocd/` and the new Terraform roots passes static checks only: nothing has been applied to any AWS account or cluster, and `dev/` has not run against a Docker daemon.
+**Status.** The dev pipeline is live on `environments/dev`. `dev/` has run from clean on a laptop under Colima, with sign-in, email, uploads, malware blocking, MinIO, metrics, rollback of a migration and a rebrand without a rebuild, but has not replaced the live stack yet. Everything under `k8s/`, `argocd/` and the new Terraform roots passes static checks only: nothing has been applied to any AWS account or cluster.
 
 ## Documentation
 
@@ -42,9 +42,9 @@ docs/                        See below
 | Merge to `develop` (app) | signed `:sha-<short>` image with SBOM/provenance → dev deploy: versions.env commit, host bootstrap, migrate, health check, smoke test, **auto-rollback** | — |
 | Merge `develop` → `main` (app) | release-please opens/updates the release PR with the changelog | merge the release PR |
 | Release PR merged (tag `vX.Y.Z`) | signed `:vX.Y.Z` → PR here bumping every enabled customer, with notes and the dev link | merge the PR |
-| Prod PR merged | per customer: signature check, snapshot, migrations (one-off ECS task), rollout, circuit breaker, smoke test; on failure restore + revert + alert | **approve `prod-<slug>`** |
+| Prod PR merged | per customer: signature check, account check, snapshot, digests committed to the client's repository, Argo CD runs migrations and rollout, smoke test; on failure revert + alert | **approve `prod-<slug>`** |
 | PR touching `terraform/` | fmt, tflint, validate, module tests, read-only plan per customer as a PR comment | review |
 | Merge to `main` touching `terraform/` | apply per customer | approve `infra-<slug>` |
-| Something is wrong in prod | — | *Rollback prod* (one click + approval) |
+| Something is wrong in prod | — | *Rollback prod* (one click + approval), after `migrate-down` if the older image needs it ([RUNBOOK](docs/RUNBOOK.md#roll-back)) |
 
 Start with [docs/ONE-TIME-SETUP.md](docs/ONE-TIME-SETUP.md).

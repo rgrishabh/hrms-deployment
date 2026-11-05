@@ -1,10 +1,10 @@
 # New client onboarding
 
-**Goal:** a new client running in under 30 minutes of your attention. AWS still needs time to build things, shown separately below. These numbers are estimates: nobody has timed this, because nothing here has run against a real account yet. Expect the first run to take longer, and fix this page as you go.
+**Goal:** a new client running in under 30 minutes of your attention. AWS still needs time to build things, shown separately below. The one-host row is measured, see below. The AWS rows are estimates, because nothing here has run against a real account yet: expect the first run to take longer, and fix this page as you go.
 
-| Path | Your time | AWS waiting |
+| Path | Your time | Machine time |
 |---|---|---|
-| On-prem, one host | 15 minutes | 5 minutes |
+| On-prem, one host | 5 minutes | @@MACHINE@@ |
 | `prod-low` | 20 minutes | About 25 minutes |
 | `prod-mid`, `prod-high` | 30 minutes | About 50 minutes, plus a second apply |
 
@@ -28,11 +28,15 @@ cd dev
 make init                    # creates .env and .brandenv, generates secrets
 $EDITOR .brandenv            # the client: name, domain, colours, locale
 $EDITOR .env                 # COMPOSE_PROFILES=tls, NODE_ENV=production, SMTP_*, BOOTSTRAP_ADMIN_*
-cp logo.svg brand/           # and BRAND_LOGO_URL=/brand/logo.svg
+cp logo.png brand/           # and BRAND_LOGO_URL=/brand/logo.png. PDFs draw a PNG or JPEG, not an SVG
 $EDITOR versions.env         # released tags for both apps
 make up
 cat setup-link.txt           # one-time link for the first administrator; delete it afterwards
 ```
+
+**To try it on a laptop,** edit only `BOOTSTRAP_ADMIN_*` in `.env` and the tags in `versions.env`. The defaults give plain HTTP at `http://localhost:8088`. To build the images rather than pull a release, see "Building images on a laptop" in the [RUNBOOK](RUNBOOK.md#the-dev-stack).
+
+**Measured:** @@MEASURED@@
 
 Point DNS at the host first, with ports 80 and 443 open, or use `CADDY_TLS="tls internal"`. Keep a copy of `.env` in a password manager: **without `DATA_ENCRYPTION_KEY`, restored bank details are unreadable.** Add the `s3backup` profile, or another off-host copy.
 
@@ -68,6 +72,7 @@ terraform -chdir=$D output -json overlay_values > /dev/null    # confirm the out
 ../hrms-deployment/scripts/generate-data-key.sh "$(terraform -chdir=$D output -raw kms_key_id)" ap-south-1
 aws secretsmanager put-secret-value --secret-id hrms/smtp-credentials \
   --secret-string '{"user":"<user>","password":"<password>"}'      # read these from a file, not shell history
+# Optional: metrics_token, vapid_private_key, in hrms/runtime-optional, also as JSON. Empty means off.
 ../hrms-deployment/scripts/new-client-overlay.sh $D overlay <deployment-tag>
 ```
 
@@ -127,7 +132,11 @@ terraform -chdir=$D apply -var-file=$PWD/terraform.tfvars
 ../hrms-deployment/scripts/smoke-test.sh https://<domain> --expect-brand "<BRAND_NAME>"
 ```
 
-Then sign in, upload a document, and check that an email arrives. Confirm the alarm email subscription: AWS sends a link to `alarm_emails`, and alarms reach nobody until it's clicked.
+Then sign in, upload a document, and check that an email arrives. Confirm the alarm email subscription: AWS sends a link to `alarm_emails`, and alarms reach nobody until it's clicked. The `freshclam` alarm fires until the first hourly check has run: that is expected.
+
+### 9. Releases from now on
+
+To have the pipeline deploy this client, add it to `environments/prod/customers.json` with `gitops_repo`, copy `environments/prod/_template/` to `environments/prod/<slug>/`, and give the `prod-<slug>` environment a `GITOPS_TOKEN` ([environments/prod/README.md](../environments/prod/README.md)).
 
 ## Afterwards
 

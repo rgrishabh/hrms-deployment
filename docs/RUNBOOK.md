@@ -7,7 +7,7 @@ Three things are in transition, and this page says which it means:
 
 - **Dev:** `environments/dev` is live until the variable `DEV_STACK_DIR` is set to `dev` ([CUTOVER.md](CUTOVER.md)). Sections below written for it say `db`; on the new stack that service is `postgres`. Everything else carries over, and the commands are in [The dev/ stack](#the-dev-stack).
 - **Prod on ECS:** the sections below mentioning ECS describe a design that was never run, and it goes away in the cutover.
-- **Prod on Kubernetes:** see [Kubernetes tiers](#kubernetes-tiers). These have also never run.
+- **Prod on Kubernetes:** see [Kubernetes tiers](#kubernetes-tiers). Manifests pass static checks, but have never run on a cluster.
 
 ## Deploy
 
@@ -91,7 +91,7 @@ bin/restore /tmp/restore-set --confirm hrms-dev        # replaces DB + documents
 **Prod (RDS):** restore a snapshot or point in time to a **new** instance, verify it, then switch. Never restore over the live
 instance. Follow BACKUP_AND_RESTORE.md (snapshot `hrms-pre-<tag>-*` for a release, AWS Backup for older points).
 
-## Add a customer
+## Add a customer (ECS design, until the cutover)
 
 1. Create the AWS account and the files: `terraform/customers/<slug>.tfvars` and `<slug>.backend.hcl` (copy `_template.*`).
    Use `backend_image`/`frontend_image` = the current release.
@@ -143,12 +143,41 @@ Works the same on the dev host, a laptop and an on-prem client. From `dev/` (`/o
 | Logs | `make logs S=backend` |
 | State and health | `make ps` |
 | Migrations only | `make migrate` |
+| Migration state | `make migrate-status` (exit 2 pending, exit 3 database ahead of this image) |
+| Undo migrations | `make migrate-down ARGS="--steps 1"`, see [Roll back the dev/ stack](#roll-back-the-dev-stack) |
+| Re-encrypt after a key change | `make rotate-keys` |
 | Demo data | `make seed` |
 | Backup now | `make backup` |
 | Restore | `make restore SET=path/to/hrms-<ts> CONFIRM=hrms-dev` |
 | Offline tests | `make test` |
 
-**Local access.** With `COMPOSE_PROFILES=local`, the site is at `http://localhost:8088`. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` for caught email at `http://localhost:8025`.
+**Local access.** With `COMPOSE_PROFILES=local`, the site is at `http://localhost:8088`. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` for caught email at `http://localhost:8025`. Links in email have no port, because the backend knows only the hostname, so add `:8088` by hand on a laptop. `setup-link.txt` already has it.
+
+**Change the brand without a rebuild.** Edit `.brandenv`, then `bin/dc up -d --no-deps backend worker frontend`. Only those three are recreated, from the same images. On the `tls` profile add `caddy` if the domain changed. Logos go in `brand/`: PDFs draw a PNG or JPEG, and anything else prints the brand name.
+
+**Is the worker alive?** `bin/dc exec worker hrms worker-health` exits 0 when its heartbeat is fresh and a scheduler pass is not stuck. The health check runs the same command. It says why when it fails.
+
+**Metrics.** `/metrics` is not routed through Caddy. Read it from inside: `bin/dc exec backend wget -qO- --header "Authorization: Bearer $(sed -n 's/^METRICS_TOKEN=//p' .env)" http://127.0.0.1:4000/metrics`. A 200 from `http://localhost:8088/metrics` is only the frontend's page.
+
+**MinIO instead of the local volume.** In `.env`: `COMPOSE_PROFILES=local,minio`, `STORAGE_DRIVER=s3`, `S3_ENDPOINT=http://minio:9000`, `AWS_S3_BUCKET=hrms-documents`, and `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`. Then `make up`. The bucket is created for you, and backups include it. Documents already in the local volume do not move.
+
+**Building images on a laptop.** `docker build` needs buildx. If your Docker client has none, Colima's VM does: `colima ssh -- sh -c "cd $PWD/../../hrms-backend && docker build -t ghcr.io/rgrishabh/hrms-backend:local ."`, the same for the frontend, and put `local` in `versions.env`. The plugin for `docker compose` may need `"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]` in `~/.docker/config.json`.
+
+### Roll back the dev/ stack
+
+Move `versions.env` back, and `make up`. The older image runs on a newer schema: migrations are expand/contract, and `migrate` ignores applied migrations it does not ship. `/health/ready` stays 200 and logs a warning.
+
+If the older image cannot work with the newer schema, undo first, **while `versions.env` still names the newer image**, because the down files are in the image being left:
+
+```bash
+make backup
+make migrate-status                   # how far ahead
+make migrate-down ARGS="--steps 1"    # or --to NAME; there is no default
+# now change versions.env, and:
+make up
+```
+
+Dropped data and scrubbed plaintext do not return, only their structure. To get data back, use `make restore`.
 
 **On-prem, about 100 users.** Use a host of 4 vCPU and 8 GB, and set in `.env`:
 
@@ -183,17 +212,32 @@ Argo CD then works through the sync waves:
 4. Job `hrms-bootstrap-1.2.0`
 5. The apps, which roll when digests or the hashed ConfigMaps change
 
-A failed Job stops the sync before the apps change. Take an RDS snapshot before merging, until the release job in [CUTOVER.md](CUTOVER.md) Step 4 does it for you:
+A failed Job stops the sync before the apps change.
+
+`deploy-prod.yml` does this for you when a `versions.env` change reaches `main`, after the `prod-<slug>` approval: it verifies the signatures, checks the account, takes the snapshot, commits the digests to the client's repository, waits for the new version and runs the smoke test. On failure it puts the client's repository and `versions.env` back and alerts `NOTIFY_WEBHOOK_URL`. Running it by hand instead, take the snapshot first:
 
 ```bash
 aws rds create-db-snapshot --db-instance-identifier hrms-db --db-snapshot-identifier hrms-pre-1-2-0
 ```
 
+`/health` does not report the backend's version yet. On a backend-only release the pipeline waits 10 minutes rather than seeing the rollout finish, so a slow sync can pass the smoke test on the old image. Argo CD's own status is the authority.
+
 **Why the release id must change.** A Job's spec cannot be edited. A new image under the same Job name makes the sync fail, and a new name is a new Job. The previous release's Jobs are pruned once they leave the manifest. Without Argo CD, apply in the same order, using `kubectl wait --for=condition=complete job/<name>` between Jobs, and delete old Jobs yourself.
 
 ### Roll back
 
-Revert the commit in the client's repository. Migrations do not run backward: they are expand/contract, so the old image tolerates the newer schema. The revert reuses the old release id, which is fine because that release's Jobs were pruned and are recreated, and provision and migrate are idempotent.
+Run *Actions → Rollback prod*, or revert the commit in the client's repository. Either way it reuses the old release id, which is fine: that release's Jobs were pruned and are recreated, provision and migrate are idempotent, and `migrate` ignores applied migrations it does not ship. Neither changes the schema.
+
+Usually that is enough, because migrations are expand/contract and the old image tolerates the newer schema. If it does not, undo the migrations **first, while the newer image is still running**. The down files are in the image being left, and `scripts/k8s-ops-job.sh` uses whichever image `hrms-backend` is running now:
+
+```bash
+aws rds create-db-snapshot --db-instance-identifier hrms-db --db-snapshot-identifier hrms-pre-rollback-1-2-0
+scripts/k8s-ops-job.sh migrate-status              # exit status is in the logs: pending, unknown
+scripts/k8s-ops-job.sh migrate-down --steps 1      # or --to NAME; there is no default
+# now run Rollback prod, typing "compatible", or revert the commit
+```
+
+The pipeline cannot do this for you: it has no access to the cluster. Pause Argo CD's auto-sync first if a sync could start while this runs. Dropped data and scrubbed plaintext do not return, only their structure; for those, restore the snapshot to a new instance. The new image's pods will fail readiness between the down and the rollout, so expect an outage for that time.
 
 ### Change settings
 
@@ -228,6 +272,9 @@ kubectl -n argocd port-forward svc/argocd-server 8080:443
 | Email never arrives | `FEATURE_EMAIL_NOTIFICATIONS`, `hrms/smtp-credentials`, then worker logs. Egress on 587 and 465 is allowed |
 | Tier-low: everything returns 503 | Node replaced and still installing. Check the ALB target group, then `journalctl -u k3s` through SSM |
 | Sync blocked by a Kyverno message | A digest or limit is missing: read the message |
+| Alarm `freshclam` | Signatures older than 48 hours, or no report for 2 hours. `kubectl -n hrms logs job/<latest hrms-freshclam-check>`, then `logs deploy/hrms-clamav`. It also fires until the first sync has run |
+| Alarm `db-replica-lag` | Reports are stale, and still correct as of the delay. Check the replica's load in Performance Insights |
+| Worker restarts, `worker unhealthy: no heartbeat` | The process is stuck or cannot write `/tmp`. `kubectl -n hrms logs deploy/hrms-worker --previous` |
 
 ### Rotate secrets (Kubernetes tiers)
 
@@ -237,4 +284,5 @@ kubectl -n argocd port-forward svc/argocd-server 8080:443
 | RDS master | RDS-managed. Provision reads the current value at each release |
 | SMTP | `aws secretsmanager put-secret-value --secret-id hrms/smtp-credentials`, then restart backend and worker |
 | Redis AUTH token | `terraform taint` the `random_password` in `elasticache`, apply, and restart pods |
-| Data key | **Never by replacement.** It needs the re-encryption job |
+| Data key | **Never by replacement.** Put the old ciphertext in `data_key_ciphertext_previous` in `hrms/runtime-optional` and the new one in `hrms/data-key-ciphertext`, let External Secrets sync, restart the pods, run `scripts/k8s-ops-job.sh rotate-keys`, then clear the previous value |
+| `METRICS_TOKEN`, `VAPID_PRIVATE_KEY` | Set them in `hrms/runtime-optional`, JSON with `metrics_token`, `vapid_private_key` and `data_key_ciphertext_previous`. Restart backend and worker. Empty means unset |

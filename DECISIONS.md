@@ -115,10 +115,53 @@ The one weakness is identity. Without IRSA, backend, worker and External Secrets
 
 **Reason.** It keeps the existing certificate and backups usable, and rollback to the old stack still works, because root can read them. This is the main thing the flip rehearsal must prove.
 
-## ADR-013: Worker health checks prove only that the container can run node
+## ADR-013: Worker health checks prove only that the container can run node (superseded)
+
+**Superseded.** The backend now has a heartbeat file and `hrms worker-health`, and Compose and Kubernetes use it. A stuck loop fails the check. The rest of this entry is the history.
 
 **Context.** The contract defines a `worker` command with no port or heartbeat. A real check needs something from the backend.
 
 **Decision.** Compose and Kubernetes run `node -e 0`. A stuck job loop is not detected.
 
 **Reason.** A guessed endpoint would fail the deploy. A real check needs a backend change, such as a heartbeat file or a small health port, and is listed as follow-up work.
+
+## ADR-014: ClamAV from `clamav/clamav-debian`
+
+**Context.** `clamav/clamav:1.5.4` has only an `amd64` image. Pulling it on `arm64` fails with `no matching manifest`, so ClamAV could not start on any Graviton tier (ADR-011) or an Apple laptop. Production refuses uploads it cannot scan, so documents would have been down on every tier.
+
+**Decision.** `clamav/clamav-debian:1.5.4`, the same project and release with `amd64` and `arm64`. It runs as UID 1000 rather than 100, and has the same `/init-unprivileged` and `clamdcheck.sh`.
+
+**Reason.** One image on every tier. It uses about 1 GB of memory once loaded, as before. Run for real under Compose on `arm64`: signatures update, and a DOCX holding the EICAR test file is refused with 422. A live volume created by the old image would need its owner changed, but none exists: the old stack has no ClamAV.
+
+## ADR-015: MinIO from Chainguard, by digest
+
+**Context.** The pinned `quay.io/minio/*` tags answer 401, and `minio/minio` on Docker Hub answers `denied`. MinIO no longer publishes public images. The options that still pull are `cgr.dev/chainguard/minio` and `bitnamilegacy/minio`, which is frozen and unmaintained.
+
+**Decision.** `cgr.dev/chainguard/minio` and `minio-client`, pinned by digest. Only a floating `latest` tag exists there, so the digest is the only pin there can be. The image has bash but no `curl`, `grep` or `mc`, so the health check speaks HTTP over bash's `/dev/tcp`, and `minio-init` uses `MC_HOST_local` rather than a shell.
+
+**Reason.** MinIO is an optional profile for laptops and on-prem, and production uses S3. Current builds with few known vulnerabilities suit it better than a frozen image. **The cost:** Chainguard does not promise to keep old digests of free images. If one stops pulling, take the current digest and test. A client who relies on MinIO should mirror the image, or use another S3-compatible store through `S3_ENDPOINT`.
+
+## ADR-016: The prod pipeline only pins digests, and watches the site
+
+**Context.** The cutover plan asks for a release job in place of the ECS one, keeping cosign, the account check, approval, snapshot, revert and alert. Argo CD applies from inside the cluster (ADR-006), and the pipeline has no way into a k3s node or a private EKS endpoint.
+
+**Decision.** `deploy-prod.yml` verifies, snapshots, commits digests to the client's repository with a per-environment `GITOPS_TOKEN`, then polls the site. The release id is `<backend version>.<7 characters of a hash of both digests>`, so the same pair of images always gets the same Job names, and a re-run changes nothing. `rollback-prod.yml` does the same with older tags and no AWS role at all, and makes the person type `compatible`.
+
+**Reason.** It keeps the pull model. **Costs accepted:** the pipeline cannot run `migrate-down`, so that stays a person's job in the runbook, before the rollback. It sees only what the site reports: `/health` has no version today, so a backend-only release is judged after a fixed wait.
+
+## ADR-017: Migrate gets its own identity
+
+**Context.** The migrate Job had only the schema owner's URL. Code migrations and `rotate-keys` read encrypted columns: a database with salaries in it would have failed, and only then. An empty database, such as a first install or CI, does not show this.
+
+**Options.** (a) Add the key and KMS access to `hrms-jobs`, which provision and bootstrap share. (b) A separate service account, secret and egress rule.
+
+**Decision.** (b). `hrms-migrate` can call `kms:Decrypt` and nothing else, and `hrms-data-key` holds only what it needs. Provision, which holds the master credentials, still has no AWS identity and no egress beyond the database.
+
+## ADR-018: The freshclam alarm comes from a CronJob
+
+**Context.** Nothing in AWS sees freshclam, and container logs do not reach CloudWatch on these tiers, so there is no log filter to alarm on. A log agent on every node to watch one thing costs more than the thing is worth.
+
+**Decision.** clamd reports its signature date over its own port. An hourly CronJob reads it and publishes `HRMS/ClamavSignatureAgeHours`. The alarm fires above 48 hours and on missing data, so a dead job is also caught.
+
+**Reason.** It watches the outcome rather than the process: signatures clamd has actually loaded. The check's TCP and date steps have run against a real clamd. `put-metric-data` and the alarm have not, without an AWS account. It reads as an alarm until the first sync, so a new client's first email may be this one.
+
