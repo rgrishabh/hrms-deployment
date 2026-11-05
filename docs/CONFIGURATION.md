@@ -113,7 +113,7 @@ Requests in flight keep the steps they were created with. Moving down to a small
 |---|---|
 | `DATABASE_URL`, `DATABASE_MIGRATION_URL` | Secret. Runtime role and schema owner role |
 | `DB_READ_HOST` | Optional. `host` or `host:port` of a read replica, with the same database name and role as `DATABASE_URL`. Report runs and exports read from it, in read-only transactions with RLS applied. Writes, and reads of what was just written, stay on the primary. If it cannot be reached, the primary answers. Reports can lag the primary by the replica's replication delay |
-| `METRICS_TOKEN` | Optional, secret, at least 16 characters. `GET /metrics` answers Prometheus text to `Authorization: Bearer <token>`, and 404 to anyone else. Unset, the route does not exist. API process only: the worker has no HTTP listener |
+| `METRICS_TOKEN` | Optional, secret, at least 16 characters. `GET /metrics` answers Prometheus text to `Authorization: Bearer <token>`, and 404 to anyone else. Unset, the route does not exist. API process only: the worker has no HTTP listener. The public edge answers 404 for `/metrics` on every tier, so scrape the backend directly |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional, for example `http://collector:4318`. Sends a span per request over OTLP/HTTP JSON: method, route pattern, status. Unset, nothing is sent |
 | `REDIS_URL` | Optional. Caches config and lookups. Without it the app reads the database, which is slower but correct |
 | `DATA_ENCRYPTION_KEY` | Secret, dev only. Base64 of 32 bytes |

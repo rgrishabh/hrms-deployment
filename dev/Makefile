@@ -54,3 +54,6 @@ test: ## Run the stack's offline tests. They need no Docker daemon
 	@tests/backup-loop.test.sh bin/backup-loop.sh
 	@tests/check-brandenv.test.sh
 	@tests/deploy-order.test.sh
+
+test-edge: ## Run dev/Caddyfile in the pinned Caddy image against stub upstreams. Needs Docker, and touches no stack
+	@tests/edge-routing.test.sh

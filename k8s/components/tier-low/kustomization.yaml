@@ -17,6 +17,9 @@ patches:
     patch: |
       - { op: remove, path: /metadata/annotations }
       - { op: replace, path: /spec/ingressClassName, value: traefik }
+      # The block-metrics ALB action. The module's ALB answers /metrics before Traefik sees it.
+      - { op: test, path: /spec/rules/0/http/paths/0/path, value: /metrics }
+      - { op: remove, path: /spec/rules/0/http/paths/0 }
   - target: { kind: SecretStore, name: aws }
     patch: |
       - { op: remove, path: /spec/provider/aws/auth }

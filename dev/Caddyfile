@@ -13,9 +13,15 @@
 	{$CADDY_TLS}
 	encode zstd gzip
 
+	# /metrics stops here, as it does on the ALB. Without this it falls through to the frontend, which
+	# answers 200 with the app's page. Prometheus scrapes backend:4000 inside the Docker network.
+	@metrics path /metrics /metrics/*
+	handle @metrics {
+		respond "Not found" 404
+	}
+
 	# The backend owns the API, health and brand files, and matches the Host header against its
-	# configured domains, so Caddy keeps the original Host. /metrics is not routed: it goes to the
-	# frontend, which never serves it, so it is reachable only inside the Docker network.
+	# configured domains, so Caddy keeps the original Host.
 	@backend path /api/* /health /health/* /ready /brand/*
 	handle @backend {
 		reverse_proxy backend:4000

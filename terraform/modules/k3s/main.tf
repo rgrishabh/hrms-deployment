@@ -370,6 +370,26 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+# /metrics stops here, as it does in Caddy and in the Ingress on the other tiers. Without this it reaches
+# the frontend through Traefik, which answers 200 with the app's page.
+resource "aws_lb_listener_rule" "block_metrics" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 5
+  action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not found"
+      status_code  = "404"
+    }
+  }
+  condition {
+    path_pattern {
+      values = ["/metrics", "/metrics/*"]
+    }
+  }
+}
+
 # Unknown Host headers never reach the cluster.
 resource "aws_lb_listener_rule" "known_hosts" {
   listener_arn = aws_lb_listener.https.arn

@@ -30,7 +30,7 @@ These are inputs for a threat model, not a finished one. They cover the deployme
 | Entry | Exposure | Controls |
 |---|---|---|
 | `/`, `/api`, `/health`, `/ready`, `/brand` | Public | WAF on AWS tiers, Host allowlist, TLS 1.2+, app auth and rate limits |
-| `/metrics` | Internal | Not routed by Caddy or Ingress. NetworkPolicy limits it to the VPC and pod ranges |
+| `/metrics` | Internal | 404 at the public edge: Caddy, the Ingress's ALB action, and the ALB listener rule on tier-low. Prometheus scrapes the backend directly with `METRICS_TOKEN`. NetworkPolicy limits it to the VPC and pod ranges |
 | Kubernetes API | Private by default; on k3s, on the node | `endpoint_public_cidrs` must return to empty after onboarding |
 | Dev host SSH | Port 22 open to GitHub's wide ranges | Pinned key, no password. SSM path exists but is untested |
 | Mailpit UI | Not published | Holds every email a dev box sends. Loopback only, through the override file |
