@@ -103,9 +103,9 @@ Requests in flight keep the steps they were created with. Moving down to a small
 
 | Variable | Dev | Prod | Notes |
 |---|---|---|---|
-| `MFA_AVAILABLE` | `false` | `true` | `false` removes MFA for every user: no prompts, no setup screens, no challenge at login |
-| `MFA_ENFORCED` | `false` | `false` | `true` makes enrolment required at next login. Invalid with `MFA_AVAILABLE=false` |
-| `MFA_METHODS` | | `totp,email` | Subset of `totp`, `email` |
+| `MFA_AVAILABLE` | `false` | `true` | `false` removes MFA for every user: no prompts, no setup screens, no challenge at login, `/auth/mfa/*` answers 404. What people enrolled in is kept, and counts again if it is turned back on |
+| `MFA_ENFORCED` | `false` | `false` | `false`: optional per user, so people who can read salaries are not required to enrol. `true` makes enrolment required at next login. Invalid with `MFA_AVAILABLE=false`, and with email as the only method and no SMTP |
+| `MFA_METHODS` | `totp,email` | `totp,email` | Subset of `totp`, `email`. Email codes need SMTP; enrolment says so without it |
 
 ### Runtime wiring
 
@@ -116,11 +116,14 @@ Requests in flight keep the steps they were created with. Moving down to a small
 | `REDIS_URL` | Optional. Caches config and lookups. Without it the app reads the database, which is slower but correct |
 | `DATA_ENCRYPTION_KEY` | Secret, dev only. Base64 of 32 bytes |
 | `KMS_KEY_ID`, `DATA_KEY_CIPHERTEXT` | Prod. The data key is decrypted with KMS at startup. Takes priority over `DATA_ENCRYPTION_KEY` |
+| `DATA_ENCRYPTION_KEY_PREVIOUS`, `DATA_KEY_CIPHERTEXT_PREVIOUS` | Comma-separated. Older keys still needed to read values during a rotation. Secret. Remove them after `hrms rotate-keys` has finished |
 | `PROCESS_ROLE` | `api` or `worker`. Only the worker runs jobs and sends email |
 | `TRUST_PROXY` | Whose `X-Forwarded-For` to believe: `false`, a number of proxy hops in front of the app, or comma-separated proxy addresses or CIDRs. `true` means one hop |
-| `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE` | Sign-in attempts on one account per minute, from any address. Default 10 |
+| `AUTH_RATE_LIMIT_PER_MINUTE` | Sign-in attempts per address per minute. Default 20. Failed sign-ins also back off, counted in the database |
+| `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE` | Sign-in attempts on one account per minute, from any address. Default 10. Browsers that have signed in to the account before, and addresses already backing off, do not count |
+| `EXPORT_RATE_LIMIT_PER_MINUTE` | CSV, Excel and journal exports per user per minute. Default 30. Per address, four times this |
 | `STORAGE_DRIVER`, `STORAGE_PATH`, `AWS_S3_BUCKET`, `AWS_REGION`, `S3_ENDPOINT` | `S3_ENDPOINT` is for MinIO |
-| `CLAMAV_HOST`, `CLAMAV_PORT` | Upload malware scanning. Prod refuses to start without it when `FEATURE_DOCUMENTS` is on |
+| `CLAMAV_HOST`, `CLAMAV_PORT` | Upload malware scanning over clamd's INSTREAM. Port defaults to 3310. Prod refuses to start without the host when `FEATURE_DOCUMENTS` is on, and refuses any upload it cannot scan. clamd's `StreamMaxLength` must be at least `STORAGE_MAX_FILE_MB` |
 
 ### SMTP
 
@@ -131,6 +134,20 @@ SMTP is the only external notification channel. There is no SMS.
 | `SMTP_HOST`, `SMTP_PORT` | Mailpit in dev. Any SMTP provider in prod, including Amazon SES |
 | `SMTP_USER`, `SMTP_PASSWORD` | Secret. Both or neither |
 | `SMTP_SECURE` | `starttls`, `tls` or `none`. Prod refuses `none` |
+
+Password reset, invitations, email codes and security notices all need SMTP. Without it, `POST /auth/password/forgot` sends nothing and `auth.resetByEmail` in the public config is `false`. `FEATURE_EMAIL_NOTIFICATIONS=false` turns off the transport and so all of these too.
+
+### Operator commands
+
+Run in the image, as the schema owner. Nothing here has an HTTP endpoint.
+
+| Command | Does |
+|---|---|
+| `hrms rotate-keys` | Re-encrypts every encrypted column with the active key, in committed batches. Rows already on it are skipped, so it can be run again. Needs the old key in a `*_PREVIOUS` variable while it runs |
+| `hrms bootstrap` | First organization and first administrator, as Owner. A one-time link by default |
+| `hrms bootstrap --reset-admin --admin-email X` | Recovers an account: new credentials, sessions ended, MFA cleared, administrator role restored. They also become Owner if no other active Owner exists |
+| `hrms bootstrap --reset-admin --make-owner --admin-email X` | Hands ownership over. Nobody in the app can appoint an Owner |
+| `hrms bootstrap --issue-link --admin-email X` | A one-time invitation link for an existing user, for an installation without SMTP |
 
 ## Layer 2: brand and client identity
 
@@ -161,7 +178,8 @@ Brand files are mounted, not baked in: a volume at `/brand` in Compose, and a Co
 ```
 GET /api/v1/config/public    no auth, read-only, no secrets
 { "product": {...}, "brand": {...}, "features": {"FEATURE_PAYROLL": true, ...},
-  "mode": "multi", "mfa": {"available": true, "enforced": false, "methods": ["totp","email"]} }
+  "mode": "multi", "mfa": {"available": true, "enforced": false, "methods": ["totp","email"]},
+  "auth": {"resetByEmail": true} }
 ```
 
 Switched-off features appear as `false`. Their descriptions don't appear.
@@ -175,6 +193,8 @@ Stored in the database and edited in the app. Each change is validated, restrict
 - Departments, designations, grades
 - Approval workflows, payroll components, notification preferences
 - Whether managers can see team salaries, capped by the salary hierarchy
+- Session lifetime, idle sign-out, failed sign-ins before back-off, a password minimum above the floor
+- Which document categories payroll staff and auditors can read
 
 ## Layer 4: product constants
 
@@ -207,6 +227,7 @@ These are in code and the same for every client. Changing one is a product relea
 | Departments, grades, designations | 3 | Settings |
 | A user's salary access level | 3 | Users, audited, capped below the editor's own level |
 | Manager sees team salaries | 3 | Settings → Security |
+| Idle sign-out, session lifetime | 3 | Settings → Security, within `SESSION_TTL_HOURS` |
 | Payroll components | 3 | Settings → Payroll |
 | Statutory rates | 3 | Rule register, maker-checker |
 | Who can see salaries, by rule | 4 | Policy code |
@@ -219,6 +240,7 @@ These are in code and the same for every client. Changing one is a product relea
 |---|---|
 | `ENABLED_MODULES` | One `FEATURE_*` per module |
 | `MFA_ENFORCEMENT` | `MFA_AVAILABLE`, `MFA_ENFORCED` |
+| Setting `security.mfa_enforcement` | Removed. The deployment decides, for everyone |
 | `SMS_*` | Removed |
 | `SMTP_SECURE=true/false` | `SMTP_SECURE=tls/starttls/none` |
 | `MAIL_TRANSPORT` | Removed. Email is on when `SMTP_HOST` is set and `FEATURE_EMAIL_NOTIFICATIONS=true` |
