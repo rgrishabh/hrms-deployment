@@ -89,7 +89,7 @@ jobs:
           bd=$(verify "$BACKEND" backend); fd=$(verify "$FRONTEND" frontend)
           [[ "$bd" == sha256:* && "$fd" == sha256:* ]] || { echo "::error::signature verification failed"; exit 1; }
           { echo "backend=$BACKEND@$bd"; echo "frontend=$FRONTEND@$fd"; } >> "$GITHUB_OUTPUT"
-      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ steps.t.outputs.region }}
