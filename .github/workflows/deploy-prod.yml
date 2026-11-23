@@ -119,7 +119,7 @@ jobs:
           release="${BACKEND_TAG#v}.$(printf '%s%s' "$bd" "$fd" | sha256sum | cut -c1-7)"
           { echo "backend=$bd"; echo "frontend=$fd"; echo "release=$release"; } >> "$GITHUB_OUTPUT"
           echo "Signatures verified: \`$BACKEND@$bd\`, \`$FRONTEND@$fd\`" >> "$GITHUB_STEP_SUMMARY"
-      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ matrix.customer.region }}
