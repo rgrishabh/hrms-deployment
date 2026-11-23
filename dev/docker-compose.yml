@@ -574,7 +574,7 @@ services:
 
   minio-init:
     profiles: ["minio"]
-    image: cgr.dev/chainguard/minio-client@sha256:1dccd2a6fd59914a98ac2d9dad95e552c91243cb0bd7242aaa224802df4b3432
+    image: cgr.dev/chainguard/minio-client@sha256:328ad584835c07ff4b28418aa54d9d9a83893b86bc543436c910359cca76ce19
     user: "1000:1000"
     <<: [*hardening, *logging]
     mem_limit: 128m
