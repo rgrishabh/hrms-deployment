@@ -171,7 +171,7 @@ services:
 
   # Cache only: no persistence, so a restart is an empty cache and the app reads the database.
   redis:
-    image: redis:7.4.12-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     user: "999:1000"
     read_only: true
     tmpfs:
