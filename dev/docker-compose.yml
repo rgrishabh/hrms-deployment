@@ -220,7 +220,7 @@ services:
 
   # Upload malware scanning. /init-unprivileged is the image's own non-root entrypoint.
   clamav:
-    image: clamav/clamav-debian:1.5.4@sha256:c21aa18cc0a358678255a3dfb343a4555b58f71b97d7b869df8fdf7ea0a5b4b1
+    image: clamav/clamav-debian:1.5.5@sha256:cb2b6fa0bf480a3c243117204b751f062c5350569d088dc269ebeef6b4331823
     user: "1000:1000"
     entrypoint: ["/init-unprivileged"]
     read_only: true
