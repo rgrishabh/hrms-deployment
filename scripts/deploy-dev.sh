@@ -35,6 +35,16 @@ done
 
 log "deploying backend=$BACKEND_TAG frontend=$FRONTEND_TAG (project $PROJECT)"
 dc pull --quiet db backend frontend caddy backup
+# Rolling back from the dev/ stack: its "postgres" container uses the same db-data volume. Two
+# postmasters on one data directory corrupt it, so it must be gone before "db" starts.
+new_db=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=postgres")
+if [ -n "$new_db" ]; then
+  log "removing the dev/ stack's postgres container; its volume is kept"
+  # shellcheck disable=SC2086 # one id per word
+  docker stop --time 60 $new_db >/dev/null
+  # shellcheck disable=SC2086
+  docker rm $new_db >/dev/null
+fi
 dc up -d --wait db
 log "provision + migrate"
 dc run --rm --no-deps provision

@@ -1,0 +1,31 @@
+# App of apps for the add-ons. Common is every tier. EKS adds the two that k3s has built in or replaces.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hrms-addons-common
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rgrishabh/hrms-deployment.git
+    targetRevision: main
+    path: argocd/addons/common
+  destination: { server: https://kubernetes.default.svc, namespace: argocd }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+---
+# Not for tier-low.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hrms-addons-eks
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rgrishabh/hrms-deployment.git
+    targetRevision: main
+    path: argocd/addons/eks
+  destination: { server: https://kubernetes.default.svc, namespace: argocd }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

@@ -1,0 +1,11 @@
+# Argo CD itself. Installed once per cluster with:
+#   helm upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm \
+#     --version 10.12.1 --namespace argocd --create-namespace --values argocd/bootstrap/values.yaml
+# k3s nodes do the same from terraform/modules/k3s/user-data.sh.tftpl.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+configs:
+  params:
+    server.insecure: true # not exposed: reached with kubectl port-forward only

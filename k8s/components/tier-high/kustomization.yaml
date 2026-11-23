@@ -1,0 +1,35 @@
+# EKS, three availability zones, 2,000 users and up. Zone spread is a hard rule here, and worker and
+# ClamAV run in pairs so that one zone can fail without stopping email or uploads.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: { kind: HorizontalPodAutoscaler, name: hrms-backend }
+    patch: |
+      - { op: replace, path: /spec/minReplicas, value: 3 }
+      - { op: replace, path: /spec/maxReplicas, value: 12 }
+  - target: { kind: HorizontalPodAutoscaler, name: hrms-frontend }
+    patch: |
+      - { op: replace, path: /spec/minReplicas, value: 3 }
+      - { op: replace, path: /spec/maxReplicas, value: 6 }
+  - target: { kind: Deployment, name: hrms-(backend|frontend) }
+    patch: |
+      - { op: replace, path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable, value: DoNotSchedule }
+  - target: { kind: Deployment, name: hrms-(worker|clamav) }
+    patch: |
+      - { op: replace, path: /spec/replicas, value: 2 }
+      - { op: replace, path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable, value: DoNotSchedule }
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hrms-backend
+      spec:
+        template:
+          spec:
+            containers:
+              - name: backend
+                env:
+                  - { name: DATABASE_POOL_MAX, value: "15" }
+                resources:
+                  requests: { cpu: 500m, memory: 512Mi }
+                  limits: { cpu: "2", memory: 1Gi }

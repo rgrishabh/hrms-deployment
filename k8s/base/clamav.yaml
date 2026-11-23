@@ -1,0 +1,91 @@
+# Upload malware scanning. The backend refuses to start in production without it while
+# FEATURE_DOCUMENTS is on. /init-unprivileged is the image's own non-root entrypoint. The -debian image
+# is the one with arm64; clamav/clamav is amd64 only (DECISIONS.md, ADR-014).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hrms-clamav
+  labels:
+    app.kubernetes.io/name: hrms-clamav
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-clamav
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hrms-clamav
+    spec:
+      serviceAccountName: hrms-clamav
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-clamav
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-clamav
+      containers:
+        - name: clamav
+          image: clamav/clamav-debian:1.5.4@sha256:c21aa18cc0a358678255a3dfb343a4555b58f71b97d7b869df8fdf7ea0a5b4b1
+          imagePullPolicy: IfNotPresent
+          command: ["/init-unprivileged"]
+          ports:
+            - { name: clamd, containerPort: 3310 }
+          startupProbe:
+            exec: { command: [clamdcheck.sh] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60 # downloads signatures on first start
+          livenessProbe:
+            exec: { command: [clamdcheck.sh] }
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            tcpSocket: { port: clamd }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 1200Mi }
+            limits: { cpu: "1", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: logs, mountPath: /var/log/clamav }
+            - { name: signatures, mountPath: /var/lib/clamav }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 2Gi }
+        - name: logs
+          emptyDir: { sizeLimit: 128Mi }
+        - name: signatures
+          emptyDir: { sizeLimit: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clamav
+  labels:
+    app.kubernetes.io/name: hrms-clamav
+spec:
+  selector:
+    app.kubernetes.io/name: hrms-clamav
+  ports:
+    - { name: clamd, port: 3310, targetPort: clamd }

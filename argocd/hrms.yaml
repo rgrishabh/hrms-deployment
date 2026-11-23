@@ -1,0 +1,40 @@
+# The installation. Points at the client's private overlay, made by scripts/new-client-overlay.sh.
+# Argo CD runs the Jobs and apps in sync-wave order, and waits for each Job. Each release's new Job
+# names mean old Jobs are pruned, not edited. See docs/RUNBOOK.md, Deploy a release.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hrms
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: hrms
+  source:
+    repoURL: git@github.com:CLIENT_ORG/CLIENT-hrms.git
+    targetRevision: main
+    path: overlay
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hrms
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - SkipDryRunOnMissingResource=true # the External Secrets CRDs may arrive moments later
+      - PruneLast=true
+    retry:
+      limit: 30
+      backoff: { duration: 1m, factor: 2, maxDuration: 10m }
+  ignoreDifferences:
+    # The HPA owns replicas on these two.
+    - group: apps
+      kind: Deployment
+      name: hrms-backend
+      jsonPointers: [/spec/replicas]
+    - group: apps
+      kind: Deployment
+      name: hrms-frontend
+      jsonPointers: [/spec/replicas]

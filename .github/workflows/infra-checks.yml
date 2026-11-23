@@ -1,0 +1,178 @@
+name: Infra checks
+# Static checks for dev/, k8s/, argocd/ and terraform/. Needs no cloud access, except the plan job,
+# which runs only when TF_PLAN_ROLE_ARN is set and prints only a summary: this repository is public.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: 1.16.6
+  TFLINT_VERSION: v0.65.0
+  YAMLLINT_VERSION: 1.38.0
+  CHECKOV_VERSION: 3.4.0
+  KUSTOMIZE_VERSION: 5.8.3
+  KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+  KUBECONFORM_VERSION: 0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  KYVERNO_VERSION: 1.19.2
+  KYVERNO_SHA256: 357eaf1df8bc24ddd5a73979fadeaae6a032e8710f11af264229756e4956bf4a
+  KUBERNETES_SCHEMA_VERSION: 1.33.0
+
+jobs:
+  yamllint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - run: pipx run "yamllint==$YAMLLINT_VERSION" -c .yamllint.yaml k8s argocd dev .github
+
+  kubernetes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Install kustomize, kubeconform and the Kyverno CLI (pinned, checksum verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          fetch() { # url sha256 file-in-archive
+            curl -fsSL -o "$RUNNER_TEMP/tool.tgz" "$1"
+            echo "$2  $RUNNER_TEMP/tool.tgz" | sha256sum -c -
+            tar -xzf "$RUNNER_TEMP/tool.tgz" -C "$RUNNER_TEMP/bin" "$3"
+          }
+          fetch "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv$KUSTOMIZE_VERSION/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" "$KUSTOMIZE_SHA256" kustomize
+          fetch "https://github.com/yannh/kubeconform/releases/download/v$KUBECONFORM_VERSION/kubeconform-linux-amd64.tar.gz" "$KUBECONFORM_SHA256" kubeconform
+          fetch "https://github.com/kyverno/kyverno/releases/download/v$KYVERNO_VERSION/kyverno-cli_v${KYVERNO_VERSION}_linux_x86_64.tar.gz" "$KYVERNO_SHA256" kyverno
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build all three tiers
+        run: scripts/k8s-build-all.sh "$RUNNER_TEMP/build"
+      - name: kubeconform
+        run: |
+          kubeconform -strict -summary -kubernetes-version "$KUBERNETES_SCHEMA_VERSION" \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            "$RUNNER_TEMP"/build/tier-*.yaml argocd/*.yaml argocd/addons k8s/policies/kyverno
+      - name: Kyverno policies, against all tiers and known-bad workloads
+        run: scripts/k8s-policy-check.sh "$RUNNER_TEMP/build"
+
+  terraform-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@ae78205cfffec9e8d93fd2b3115c7e9d3166d4b6 # v5.0.0
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+      - run: terraform fmt -check -recursive terraform
+      - name: tflint
+        run: |
+          tflint --init --config "$PWD/terraform/.tflint.hcl"
+          for d in terraform/modules/* terraform/envs/*; do echo "== $d"; tflint --chdir "$d" --config "$PWD/terraform/.tflint.hcl"; done
+      - name: terraform validate
+        run: |
+          export TF_PLUGIN_CACHE_DIR="$RUNNER_TEMP/plugins"; mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          for d in terraform/modules/* terraform/envs/*; do
+            echo "== $d"
+            terraform -chdir="$d" init -backend=false -no-color >/dev/null
+            terraform -chdir="$d" validate -no-color
+          done
+      - name: terraform test
+        run: |
+          terraform -chdir=terraform/modules/hrms-stack test -no-color
+          terraform -chdir=terraform/modules/org-guardrails test -no-color
+
+  checkov:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - run: pipx install "checkov==$CHECKOV_VERSION"
+      - name: Terraform and GitHub Actions
+        run: |
+          checkov -d terraform --config-file .checkov.yaml --framework terraform
+          checkov -d .github/workflows --config-file .checkov.yaml --framework github_actions
+      - name: Install kustomize (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/k.tgz" "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv$KUSTOMIZE_VERSION/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "$KUSTOMIZE_SHA256  $RUNNER_TEMP/k.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/k.tgz" -C "$RUNNER_TEMP" kustomize
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Built manifests
+        run: |
+          scripts/k8s-build-all.sh "$RUNNER_TEMP/build"
+          for t in low mid high; do checkov -f "$RUNNER_TEMP/build/tier-$t.yaml" --config-file .checkov.yaml --framework kubernetes; done
+
+  trivy-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          trivy-config: .trivy.yaml
+
+  plan:
+    needs: terraform-static
+    if: github.event_name == 'pull_request' && vars.TF_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [prod-low, prod-mid, prod-high]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
+      - name: Plan, summary only
+        working-directory: terraform/envs/${{ matrix.env }}
+        env:
+          # A reference environment's values and backend settings, held as secrets because this repository is public.
+          TFVARS: ${{ matrix.env == 'prod-low' && secrets.TFVARS_PROD_LOW || matrix.env == 'prod-mid' && secrets.TFVARS_PROD_MID || secrets.TFVARS_PROD_HIGH }}
+          BACKEND: ${{ matrix.env == 'prod-low' && secrets.TFBACKEND_PROD_LOW || matrix.env == 'prod-mid' && secrets.TFBACKEND_PROD_MID || secrets.TFBACKEND_PROD_HIGH }}
+        run: |
+          [ -n "$TFVARS" ] && [ -n "$BACKEND" ] || { echo "::notice::No reference values for ${{ matrix.env }}; skipping"; exit 0; }
+          umask 077
+          printf '%s\n' "$TFVARS" > "$RUNNER_TEMP/plan.tfvars"
+          printf '%s\n' "$BACKEND" > "$RUNNER_TEMP/backend.hcl"
+          terraform init -no-color -backend-config="$RUNNER_TEMP/backend.hcl" >/dev/null 2>&1 || { echo "::error::terraform init failed; details withheld from public logs"; exit 1; }
+          set +e
+          terraform plan -no-color -refresh=false -lock=false -var-file="$RUNNER_TEMP/plan.tfvars" > "$RUNNER_TEMP/plan.txt" 2>&1
+          code=$?; set -e
+          summary=$(grep -E '^(Plan:|No changes)' "$RUNNER_TEMP/plan.txt" || echo "no summary line")
+          echo "### ${{ matrix.env }}: $summary" >> "$GITHUB_STEP_SUMMARY"
+          [ "$code" -eq 0 ] || { echo "::error::terraform plan failed; details withheld from public logs"; exit 1; }

@@ -1,0 +1,49 @@
+# Template for one client's installation. This repository is public: a real client's copy of this
+# folder, with its values, belongs in a private repository (docs/NEW_CLIENT_ONBOARDING.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hrms
+resources:
+  - ../../base
+# Tier: change this one line to tier-low, tier-mid or tier-high.
+components:
+  - ../../components/tier-mid
+
+configMapGenerator:
+  - name: hrms-app
+    envs: [app.env]
+  - name: hrms-brand
+    envs: [brand.env]
+  - name: hrms-brand-files
+    files: [brand/placeholder.svg]
+  # The release id names this release's Jobs. scripts/k8s-release.sh sets it with the image digests.
+  - name: hrms-release
+    envs: [release.env]
+    options:
+      disableNameSuffixHash: true
+
+# Digests, never tags. scripts/k8s-release.sh sets these. The zero digests fail at pull on purpose.
+images:
+  - name: ghcr.io/rgrishabh/hrms-backend
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: ghcr.io/rgrishabh/hrms-frontend
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+# Values Terraform knows: role ARNs, certificate, WAF and the RDS master secret name.
+patches:
+  - path: infra-patch.yaml
+  - target: { kind: ExternalSecret, name: hrms-provision }
+    patch: |
+      - { op: replace, path: /spec/data/4/remoteRef/key, value: "rds!db-00000000-0000-0000-0000-000000000000" }
+      - { op: replace, path: /spec/data/5/remoteRef/key, value: "rds!db-00000000-0000-0000-0000-000000000000" }
+
+replacements:
+  - source: { kind: ConfigMap, name: hrms-release, fieldPath: data.RELEASE }
+    targets:
+      - select: { kind: Job }
+        fieldPaths: [metadata.name]
+        options: { delimiter: "-", index: 2 }
+  - source: { kind: ConfigMap, name: hrms-brand, fieldPath: data.BRAND_DOMAIN }
+    targets:
+      - select: { kind: Ingress, name: hrms }
+        fieldPaths: [spec.rules.0.host]

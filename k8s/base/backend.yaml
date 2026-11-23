@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hrms-backend
+  labels:
+    app.kubernetes.io/name: hrms-backend
+spec:
+  # Replicas are owned by the HPA.
+  revisionHistoryLimit: 5
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hrms-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hrms-backend
+    spec:
+      serviceAccountName: hrms-backend
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-backend
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hrms-backend
+      containers:
+        - name: backend
+          image: ghcr.io/rgrishabh/hrms-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["serve"]
+          ports:
+            - { name: http, containerPort: 4000 }
+          envFrom:
+            - configMapRef: { name: hrms-app }
+            - configMapRef: { name: hrms-brand }
+            - secretRef: { name: hrms-runtime }
+            - secretRef: { name: hrms-cache, optional: true } # no Redis on tier-low; the app reads the database
+          env:
+            - { name: PROCESS_ROLE, value: api }
+            - { name: DATABASE_POOL_MAX, value: "10" }
+          lifecycle:
+            preStop:
+              sleep: { seconds: 10 } # let the load balancer stop sending before shutdown starts
+          startupProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: brand, mountPath: /brand, readOnly: true }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+        - name: brand
+          configMap: { name: hrms-brand-files }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hrms-backend
+  labels:
+    app.kubernetes.io/name: hrms-backend
+spec:
+  selector:
+    app.kubernetes.io/name: hrms-backend
+  ports:
+    - { name: http, port: 4000, targetPort: http }

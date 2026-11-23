@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] Version bumps only change `environments/*/versions.env` (immutable tags)
+- [ ] Version bumps only change `environments/*/versions.env` or `dev/versions.env` (immutable tags)
 - [ ] Terraform: plan comment reviewed for every affected customer
 - [ ] No secrets, `.env` or `*.tfvars` with real credentials committed
 - [ ] Runbook / one-time setup updated if operators must do something new

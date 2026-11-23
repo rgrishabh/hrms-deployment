@@ -1,0 +1,12 @@
+# Use when the GHCR packages are private. Adds a pull secret from hrms/ghcr-pull to every pod.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - pull-secret.yaml
+patches:
+  - target: { kind: Deployment }
+    patch: |
+      - { op: add, path: /spec/template/spec/imagePullSecrets, value: [{ name: ghcr-pull }] }
+  - target: { kind: Job }
+    patch: |
+      - { op: add, path: /spec/template/spec/imagePullSecrets, value: [{ name: ghcr-pull }] }

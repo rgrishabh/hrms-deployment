@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Restore a backup set INTO THIS installation, replacing its current data.
+# Usage: bin/restore <backup-dir> --confirm <project-name>
+#   <backup-dir> = a local copy of backups/hrms-<ts>/ (db.dump, documents.tar.gz, SHA256SUMS)
+# Stops everything that holds a database connection, recreates the database, restores the database
+# and documents, then starts the stack. Needs the same DATA_ENCRYPTION_KEY as the backed-up
+# installation, or bank details stay unreadable.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+DIR=${1:?usage: bin/restore <backup-dir> --confirm <project-name>}
+[ "${2:-}" = "--confirm" ] || { echo "refusing: add --confirm <project-name>" >&2; exit 1; }
+PROJECT=$(sed -n 's/^name: *//p' docker-compose.yml)
+[ "${3:-}" = "$PROJECT" ] || { echo "refusing: --confirm must be followed by this project's name ($PROJECT)" >&2; exit 1; }
+DIR=$(cd "$DIR" && pwd)
+[ -s "$DIR/db.dump" ] || { echo "no db.dump in $DIR" >&2; exit 1; }
+if command -v sha256sum >/dev/null; then sum() { sha256sum -c SHA256SUMS; }; else sum() { shasum -a 256 -c SHA256SUMS; }; fi
+( cd "$DIR" && sum )
+
+echo "stopping every service that connects to the database"
+bin/dc stop backend worker frontend backup
+bin/dc up -d --wait postgres
+bin/dc exec -T postgres psql -U postgres -v ON_ERROR_STOP=1 -d postgres \
+  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='hrms' AND pid <> pg_backend_pid()" \
+  -c "DROP DATABASE IF EXISTS hrms" -c "CREATE DATABASE hrms OWNER hrms_owner"
+bin/dc exec -T postgres pg_restore -U postgres --no-owner --role=hrms_owner --exit-on-error -d hrms < "$DIR/db.dump"
+
+IMAGE=$(bin/dc config --images backend | head -1)
+restore_volume() { # volume mount-point archive-name
+  docker run --rm -u 0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --network none \
+    -v "${PROJECT}_$1:$2" -v "$DIR/$3:/restore.tar.gz:ro" --entrypoint sh "$IMAGE" \
+    -c "find $2 -mindepth 1 -delete && tar -C $2 -xzf /restore.tar.gz && chown -R 1000:1000 $2"
+}
+if [ -f "$DIR/documents.tar.gz" ]; then
+  echo "restoring documents"; restore_volume app-storage /app/storage documents.tar.gz
+else echo "warning: no documents.tar.gz; documents not restored" >&2; fi
+if [ -f "$DIR/minio.tar.gz" ]; then
+  echo "restoring object storage"; restore_volume minio-data /data minio.tar.gz
+fi
+
+echo "restored; starting the stack (provision, migrate and bootstrap run first)"
+bin/stack-up

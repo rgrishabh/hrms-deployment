@@ -1,0 +1,16 @@
+# Copy to the client's private repository as terraform.tfvars. Real values do not belong here:
+# this repository is public, and account IDs, domains and addresses are client data.
+account_id    = "<12-digit account>"
+region        = "ap-south-1"
+customer_slug = "<client>"
+domain        = "hrms.example.com"
+extra_domains = []
+# route53_zone_id = "Z..."
+admin_email  = "it-admin@example.com"
+admin_name   = "Full Name"
+alarm_emails = ["ops@example.com"]
+monthly_budget_usd = 0
+# state_kms_key_arn = "arn:aws:kms:ap-south-1:<shared>:key/..."
+gitops_repo_url = "git@github.com:<org>/<client>-hrms.git"
+node_instance_type = "t4g.large"
+db_instance_class  = "db.t4g.small"

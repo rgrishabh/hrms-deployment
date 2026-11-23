@@ -1,0 +1,11 @@
+# Used by `trivy config --config .trivy.yaml .`, locally and in CI.
+exit-code: 1
+severity: [MEDIUM, HIGH, CRITICAL]
+ignorefile: .trivyignore
+scan:
+  skip-dirs:
+    - terraform/modules/hrms-stack # ECS stack, removed by docs/CUTOVER.md
+    - terraform/envs/customer
+    - environments/dev
+    - k8s/policies/tests # known-bad on purpose
+    - k8s/build

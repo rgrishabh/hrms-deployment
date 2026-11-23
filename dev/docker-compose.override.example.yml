@@ -1,0 +1,10 @@
+# Laptop conveniences. Copy to docker-compose.override.yml, which is git-ignored and which Compose
+# loads automatically. Everything binds to the loopback interface. Do not use this on a shared host.
+services:
+  mailpit:
+    ports:
+      - "127.0.0.1:8025:8025" # caught email
+  postgres:
+    networks: [internal, edge] # a container on the internal network alone cannot publish a port
+    ports:
+      - "127.0.0.1:55432:5432" # psql as the postgres role; password in .env

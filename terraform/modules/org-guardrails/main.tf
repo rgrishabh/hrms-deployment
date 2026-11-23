@@ -21,6 +21,12 @@ variable "allowed_regions" {
   default = ["ap-south-1"]
 }
 
+variable "edge_region" {
+  description = "CloudFront's certificates, web ACLs and their logs live here, whatever the allowed regions are."
+  type        = string
+  default     = "us-east-1"
+}
+
 variable "break_glass_role_arn_pattern" {
   description = "Role exempt from the key-deletion guardrail (emergency use only)."
   type        = string
@@ -34,6 +40,10 @@ locals {
     "route53:*", "route53domains:*", "cloudfront:*", "waf:*", "health:*", "trustedadvisor:*",
     "acm:*", "kms:*", "s3:GetBucketLocation", "s3:ListAllMyBuckets", "sso:*", "identitystore:*",
   ]
+  # AWS WAF for CloudFront is wafv2 in the edge region. waf:* is the old API and does not cover it, so
+  # the region lock would deny every CLOUDFRONT web ACL. Its logs and metrics stay in that region too.
+  edge_services = ["wafv2:*", "logs:*", "cloudwatch:*"]
+  lock_regions  = contains(var.allowed_regions, var.edge_region) ? [] : [var.edge_region]
 }
 
 resource "aws_organizations_policy" "guardrails" {
@@ -48,7 +58,14 @@ resource "aws_organizations_policy" "guardrails" {
         Effect    = "Deny"
         NotAction = local.global_services
         Resource  = "*"
-        Condition = { StringNotEquals = { "aws:RequestedRegion" = var.allowed_regions } }
+        Condition = { StringNotEquals = { "aws:RequestedRegion" = concat(var.allowed_regions, [var.edge_region]) } }
+      },
+      {
+        Sid       = "DenyEdgeRegionExceptEdgeServices"
+        Effect    = "Deny"
+        NotAction = concat(local.global_services, local.edge_services)
+        Resource  = "*"
+        Condition = { StringEquals = { "aws:RequestedRegion" = local.lock_regions } }
       },
       { Sid = "DenyLeavingOrg", Effect = "Deny", Action = "organizations:LeaveOrganization", Resource = "*" },
       {

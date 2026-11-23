@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# DEV/DEMO ONLY: load synthetic demo data (a 60-person testing laboratory, 10 persona logins) into
+# this installation. Refuses unless APP_ENVIRONMENT is dev or demo; the backend additionally refuses
+# when any real (non-demo) employee exists, and does nothing if demo data is already present.
+# The logins and their password are written to demo-credentials.txt (mode 600), never to the terminal.
+# Usage: bin/demo-data            then   cat /opt/hrms/dev/demo-credentials.txt
+set -euo pipefail
+cd "$(dirname "$0")/.."
+env_name=$(grep -E '^APP_ENVIRONMENT=' .env | tail -1 | cut -d= -f2- | tr -d '"'"'" || true)
+case "${env_name:-dev}" in dev|demo) ;; *) echo "refusing: APP_ENVIRONMENT=$env_name (demo data is for dev/demo only)" >&2; exit 1 ;; esac
+umask 077
+out=demo-credentials.txt
+DEMO_DATA_ALLOWED=true bin/dc --profile tools run --rm --no-deps -T demo > "$out.new"
+if [ -s "$out.new" ]; then
+  mv "$out.new" "$out"
+  echo "demo data loaded; logins written to $PWD/$out (mode 600)"
+else
+  rm -f "$out.new"
+  echo "no new logins (demo data was already present)"
+fi

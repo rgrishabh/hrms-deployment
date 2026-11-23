@@ -1,0 +1,18 @@
+# Limits the hrms Application to its own namespace. Add-ons use the default project: they are cluster-wide.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: hrms
+  namespace: argocd
+spec:
+  description: One HRMS installation.
+  # Replace the second entry with the client's private repository.
+  sourceRepos:
+    - https://github.com/rgrishabh/hrms-deployment.git
+    - git@github.com:CLIENT_ORG/CLIENT-hrms.git
+  destinations:
+    - { server: https://kubernetes.default.svc, namespace: hrms }
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
+  namespaceResourceWhitelist:
+    - { group: "*", kind: "*" }

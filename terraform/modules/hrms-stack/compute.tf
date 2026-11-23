@@ -52,7 +52,7 @@ resource "aws_iam_role_policy" "execution" {
       {
         Effect = "Allow"
         Action = ["secretsmanager:GetSecretValue"]
-        Resource = concat([for s in aws_secretsmanager_secret.app : s.arn], [aws_db_instance.this.master_user_secret[0].secret_arn, aws_secretsmanager_secret.smtp_password.arn, aws_secretsmanager_secret.sms_auth_header.arn],
+        Resource = concat([for s in aws_secretsmanager_secret.app : s.arn], [aws_db_instance.this.master_user_secret[0].secret_arn, aws_secretsmanager_secret.smtp_password.arn],
         [for s in aws_secretsmanager_secret.registry : s.arn])
       },
       { Effect = "Allow", Action = ["kms:Decrypt"], Resource = [aws_kms_key.main.arn] },
@@ -143,17 +143,7 @@ locals {
     MAIL_FROM_ADDRESS = var.mail.from_address
     MAIL_FROM_NAME    = var.mail.from_name
   }
-  mail_env_list = [for k, v in local.mail_env : { name = k, value = v } if v != null && v != ""]
-  sms_env = {
-    SMS_TRANSPORT         = var.sms.transport
-    SMS_HTTP_URL          = var.sms.http_url
-    SMS_HTTP_CONTENT_TYPE = var.sms.content_type
-    SMS_HTTP_BODY         = var.sms.body
-    SMS_SENDER_ID         = var.sms.sender_id
-    SMS_DLT_ENTITY_ID     = var.sms.dlt_entity_id
-  }
-  sms_env_list         = [for k, v in local.sms_env : { name = k, value = v } if v != null && v != ""]
-  sms_secret           = var.sms.transport == "http" ? [{ name = "SMS_HTTP_AUTH_HEADER", valueFrom = aws_secretsmanager_secret.sms_auth_header.arn }] : []
+  mail_env_list        = [for k, v in local.mail_env : { name = k, value = v } if v != null && v != ""]
   smtp_secret          = var.mail.transport == "smtp" && var.mail.smtp_user != null ? [{ name = "SMTP_PASSWORD", valueFrom = aws_secretsmanager_secret.smtp_password.arn }] : []
   identity_env_list    = [for k, v in local.identity_env : { name = k, value = v } if v != null && v != ""]
   branding_env_list    = [for k, v in local.branding_env : { name = k, value = v } if v != null && v != ""]
@@ -197,7 +187,7 @@ resource "aws_ecs_task_definition" "api" {
   container_definitions = jsonencode([merge(local.container_base, {
     portMappings     = [{ containerPort = 4000, protocol = "tcp" }]
     logConfiguration = local.log.api
-    environment = concat(local.common_env, local.identity_env_list, local.branding_env_list, local.mail_env_list, local.sms_env_list, [
+    environment = concat(local.common_env, local.identity_env_list, local.branding_env_list, local.mail_env_list, [
       { name = "DATABASE_SSL", value = "verify-full" },
       { name = "TRUST_PROXY", value = "true" },
       { name = "COOKIE_SECURE", value = "true" },
@@ -208,7 +198,7 @@ resource "aws_ecs_task_definition" "api" {
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = local.secret.database_url },
       { name = "DATA_ENCRYPTION_KEY", valueFrom = local.secret.data_encryption_key },
-    ], local.smtp_secret, local.sms_secret)
+    ], local.smtp_secret)
     healthCheck = {
       command     = ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:4000/health"]
       interval    = 30

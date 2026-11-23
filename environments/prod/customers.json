@@ -1,4 +1,4 @@
 {
-  "_comment": "Production installations (one AWS account each). A customer receives releases when enabled=true AND environments/prod/<slug>/versions.env exists. account_id/region/domain must match terraform/customers/<slug>.tfvars. GitHub Environment prod-<slug> holds AWS_DEPLOY_ROLE_ARN and the required reviewers.",
+  "_comment": "Production installations (one AWS account each). A customer receives releases when enabled=true AND environments/prod/<slug>/versions.env exists. gitops_repo is the client's private overlay repository. GitHub Environment prod-<slug> holds AWS_DEPLOY_ROLE_ARN, GITOPS_TOKEN and the required reviewers.",
   "customers": []
 }

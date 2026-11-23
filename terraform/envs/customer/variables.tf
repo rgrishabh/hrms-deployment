@@ -43,12 +43,6 @@ variable "mail" {
   default     = {}
 }
 
-variable "sms" {
-  description = "See modules/hrms-stack: transport, http_url, content_type, body, sender_id, dlt_entity_id."
-  type        = any
-  default     = {}
-}
-
 variable "enabled_modules" {
   type    = list(string)
   default = ["default"]

@@ -1,0 +1,33 @@
+# Layer 2: brand and client identity. No secrets. To onboard a client: copy to .brandenv, fill in,
+# deploy. The stack refuses to start without this file, and bin/check-brandenv validates it.
+# Quote colours: an unquoted # starts a comment.
+
+# Required
+BRAND_NAME=Example Laboratories
+BRAND_PRODUCT_NAME=Example HRMS
+BRAND_PRIMARY_COLOR="#14532D"
+BRAND_SUPPORT_EMAIL=support@example.com
+BRAND_EMAIL_FROM=hrms@example.com
+# Hostname only. Use localhost on a laptop.
+BRAND_DOMAIN=localhost
+BRAND_LOCALE=en-IN
+BRAND_TIMEZONE=Asia/Kolkata
+BRAND_CURRENCY=INR
+# DD/MM/YYYY, DD-MM-YYYY, DD-MMM-YYYY or YYYY-MM-DD
+BRAND_DATE_FORMAT=DD/MM/YYYY
+# MM-DD
+BRAND_FINANCIAL_YEAR_START=04-01
+BRAND_COUNTRY=IN
+
+# Optional. Logos are https:// URLs or files in ./brand, referenced as /brand/<file>.
+BRAND_LEGAL_NAME=
+BRAND_LOGO_URL=
+BRAND_LOGO_DARK_URL=
+BRAND_FAVICON_URL=
+BRAND_SECONDARY_COLOR="#0F172A"
+BRAND_ACCENT_COLOR="#2E8B57"
+BRAND_FONT_FAMILY=
+BRAND_SUPPORT_PHONE=
+BRAND_HELP_URL=
+BRAND_LOGIN_MESSAGE=
+BRAND_EXTRA_DOMAINS=

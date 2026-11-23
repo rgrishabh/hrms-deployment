@@ -1,0 +1,14 @@
+extends: default
+ignore: |
+  k8s/build/
+  .terraform/
+  environments/dev/docker-compose.yml
+rules:
+  line-length: disable
+  document-start: disable
+  comments: { min-spaces-from-content: 1 }
+  comments-indentation: disable
+  indentation: { spaces: consistent, indent-sequences: whatever }
+  braces: { max-spaces-inside: 1 }
+  brackets: { max-spaces-inside: 1 }
+  truthy: { check-keys: false }

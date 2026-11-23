@@ -1,4 +1,140 @@
-# Delivery architecture
+# Architecture
+
+The first part of this page is the target: a Compose stack for dev and on-prem, and three AWS tiers. **None of the AWS tiers has been applied.** The second part, [Delivery](#delivery), describes the pipeline that runs today, and still mentions the ECS design until the [cutover](CUTOVER.md).
+
+Costs are in [COST_ESTIMATES.md](COST_ESTIMATES.md), recovery in [DR.md](DR.md), and the settings model in [CONFIGURATION.md](CONFIGURATION.md).
+
+## Tiers at a glance
+
+| | Compose (`dev/`) | `prod-low` | `prod-mid` | `prod-high` |
+|---|---|---|---|---|
+| For | Dev, on-prem about 100 users | About 100 to 300 users | About 300 to 2,000 | 2,000 and up |
+| Compute | One host | k3s, one Graviton node | EKS, two zones | EKS, three zones |
+| Database | Postgres container | RDS single-AZ plus read replica | RDS Multi-AZ | RDS Multi-AZ plus read replica |
+| Cache | Redis container | None | ElastiCache, two nodes | ElastiCache, three nodes |
+| Documents | Volume, or MinIO | S3 | S3 | S3, replicated |
+| Edge | Caddy | ALB + WAF | CloudFront + WAF + ALB | CloudFront + WAF + ALB |
+| Egress | Host | NAT instance, S3 endpoint | NAT gateway, S3 endpoint | NAT per zone, S3 endpoint |
+| Identity | Environment | Node role | IRSA | IRSA |
+| Region failure | Restore elsewhere | Not covered | Not covered | DR pilot light |
+
+User counts are planning guesses: nothing has been load-tested.
+
+**Every tier** has one installation per client in its own AWS account. It shares the same images, a read-only root, non-root users, KMS encryption, private subnets for compute and data, and no public RDS or S3.
+
+**Tier-low's trade-offs.** A node failure is a short outage. A zone failure can mean promoting the replica or a point-in-time restore. Backend, worker and External Secrets share the node's identity ([ADR-005](../DECISIONS.md)). The tier is for clients who accept that for about a quarter of the mid-tier cost.
+
+## Compose: dev and on-prem
+
+```mermaid
+flowchart TB
+  U([Users]) -->|443| C[caddy, tls profile]
+  L([Laptop]) -->|127.0.0.1:8088| G[gateway, local profile]
+  subgraph edge[edge network]
+    C & G -->|/, /assets| F[frontend :8080]
+    C & G -->|/api /health /ready /brand| B[backend :4000]
+  end
+  subgraph internal["internal network: no route out"]
+    B & W[worker] --> P[(postgres)]
+    B & W --> R[(redis)]
+    B & W --> V[clamav :3310]
+    W --> M[mailpit :1025]
+    BK[backup] --> P
+  end
+  S["provision, migrate, bootstrap"] -.runs first.-> B
+  S --> P
+  BK -.optional s3backup.-> X[(S3)]
+  W -.on-prem: real SMTP.-> E([SMTP provider])
+```
+
+Order: `postgres` healthy, then `provision`, `migrate` and `bootstrap`, then `backend` and `worker`, then Caddy. Only `postgres` and `provision` see the superuser password; only the one-offs and `backup` see the owner's.
+
+## prod-low
+
+```mermaid
+flowchart TB
+  U([Users]) --> A[ALB + regional WAF<br/>public subnets, 404 for unknown hosts]
+  A -->|NodePort 30080| T
+  subgraph app[private app subnet, one zone]
+    subgraph N[k3s on t4g.large, Auto Scaling group of 1]
+      T[Traefik] --> FE[frontend]
+      T --> BE[backend]
+      WK[worker]
+      CL[clamav]
+      AR[Argo CD, External Secrets, Kyverno]
+    end
+  end
+  subgraph data[data subnets: no internet route]
+    RP[(RDS single-AZ)] --> RR[(read replica)]
+  end
+  BE & WK --> RP
+  BE --> RR
+  BE & WK -->|node role via IMDS| S3[(S3 + KMS)]
+  N -->|NAT instance| NET([GHCR, SMTP, freshclam, AWS APIs])
+  N -->|gateway endpoint| S3
+```
+
+## prod-mid
+
+```mermaid
+flowchart TB
+  U([Users]) --> CF[CloudFront + WAF<br/>caches /assets only]
+  CF -->|prefix-listed SG| A[ALB, from the Ingress]
+  subgraph vpc[VPC, two zones]
+    A --> P1 & P2
+    subgraph P1[zone a: EKS node]
+      F1[frontend] & B1[backend] & W1[worker] & C1[clamav]
+    end
+    subgraph P2[zone b: EKS node]
+      F2[frontend] & B2[backend]
+    end
+    B1 & B2 & W1 --> DB[(RDS Multi-AZ)]
+    B1 & B2 --> RD[(ElastiCache, two nodes)]
+  end
+  B1 & B2 & W1 -->|IRSA| S3[(S3 + KMS)]
+  vpc -->|NAT gateway| NET([GHCR, SMTP, freshclam])
+```
+
+## prod-high
+
+```mermaid
+flowchart TB
+  U([Users]) --> CF[CloudFront + WAF]
+  CF --> A[ALB]
+  subgraph primary["ap-south-1, three zones"]
+    A --> PODS[EKS: hard zone spread, worker x2, clamav x2]
+    PODS --> DB[(RDS Multi-AZ)]
+    PODS --> RR[(read replica)]
+    PODS --> RD[(ElastiCache, three nodes)]
+    PODS --> S3[(S3 + KMS)]
+    BK[AWS Backup]
+  end
+  subgraph dr["ap-south-2: pilot light"]
+    DBD[(RDS cross-region replica)]
+    S3D[(S3 replica)]
+    KD[KMS replica key, secret replicas]
+    BV[Backup vault]
+    EKSD[EKS, only when activated]:::off
+  end
+  DB -.async.-> DBD
+  S3 -.replication.-> S3D
+  BK -.copy.-> BV
+  CF -.on failover, origin changes.-> EKSD
+  classDef off stroke-dasharray: 5 5
+```
+
+## How Kubernetes is put together
+
+- `k8s/base`: every workload, under PodSecurity `restricted`, with default-deny NetworkPolicy, startup, liveness and readiness probes, topology spread, and images by digest.
+- `k8s/components/tier-*`: sizing, replicas and tier differences. One line in the overlay selects one.
+- `k8s/overlays/prod`: the template for a client: `app.env`, `brand.env`, brand files, digests and a release id.
+- Jobs named per release, run in order by Argo CD sync waves ([ADR-006](../DECISIONS.md)).
+- Secrets from AWS Secrets Manager through External Secrets. Workload classes receive different Secrets.
+- Kyverno blocks mutable tags, root and missing limits. CI runs the same policies against all three tiers.
+
+## Delivery
+
+Delivery today:
 
 Three repositories:
 

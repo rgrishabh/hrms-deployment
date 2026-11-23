@@ -1,0 +1,22 @@
+# Copy to the client's private repository as terraform.tfvars. Real values do not belong here:
+# this repository is public, and account IDs, domains and addresses are client data.
+account_id    = "<12-digit account>"
+region        = "ap-south-1"
+customer_slug = "<client>"
+domain        = "hrms.example.com"
+extra_domains = []
+# route53_zone_id = "Z..."
+admin_email  = "it-admin@example.com"
+admin_name   = "Full Name"
+alarm_emails = ["ops@example.com"]
+monthly_budget_usd = 0
+# state_kms_key_arn = "arn:aws:kms:ap-south-1:<shared>:key/..."
+cluster_admin_role_arns = { sso = "arn:aws:iam::<account>:role/<sso-admin-role>" }
+# While installing Argo CD only. Return to [] afterwards.
+endpoint_public_cidrs = ["<your-ip>/32"]
+dr_region = "ap-south-2"
+# false is the pilot light. See docs/DR.md.
+dr_activate = false
+# Second apply, after the first Argo CD sync creates the ALB:
+# origin_alb_dns_name = "k8s-hrms-....ap-south-1.elb.amazonaws.com"
+# alb_arn_suffix      = "app/k8s-hrms-.../..."
